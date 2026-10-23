@@ -10,6 +10,10 @@ import sys
 import tempfile
 import time
 import uuid
+import json
+import http.cookiejar
+import urllib.error
+import urllib.request
 from collections import defaultdict, deque
 from pathlib import Path
 
@@ -79,6 +83,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    InputMediaVideo,
     Message,
 )
 
@@ -87,6 +92,8 @@ TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL = "@horizonmarkettj"  # канал для обязательной подписки
 CHANNEL_URL = "https://t.me/horizonmarkettj"
 CREATOR_URL = "https://t.me/IDIEVW"
+SHOP_URL = "https://korvontj.shop"  # ссылка для кнопки «Посмотреть» (магазин)
+CAPTION = "❤️ @IDIEVW"  # подпись под видео, музыкой и сторис
 # ID администратора(ов) через запятую. Свой ID можно узнать командой /id
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_ID", "").replace(" ", "").split(",") if x.isdigit()}
 MAX_PARALLEL = int(os.getenv("MAX_PARALLEL", "2"))  # сколько загрузок одновременно
@@ -114,7 +121,7 @@ LANG_PROMPT = "Забонро интихоб кунед 👇\nВыберите �
 
 TEXTS = {
     "ru": {
-        "welcome": "Привет! 👋\nОтправь ссылку на видео из YouTube, Instagram или TikTok.",
+        "welcome": "Привет! 👋\nОтправь ссылку на видео из YouTube, Instagram или TikTok.\n📸 Сторис Instagram: ссылка на сторис или /stories логин",
         "subscribe": "📢 Чтобы пользоваться ботом, подпишись на каналы ниже и нажми «Проверить».\n\n"
         "Или пригласи друзей: /invite",
         "btn_sub": "📢 Подписаться",
@@ -156,14 +163,16 @@ TEXTS = {
         "invite_done": "🎉 Ты уже пригласил достаточно друзей — подписка не нужна!",
         "ref_new": "🎉 Твой друг начал пользоваться ботом! Приглашено: {n}/{need}",
         "ref_unlocked": "🎁 Ты пригласил {need} друзей — теперь подписка на канал не нужна!",
-        "ad": "👨‍💻 Создатель бота: @IDIEVW\n\n"
-        "Для создания веб-сайтов, чат-ботов или приложений iOS/Android "
-        "для вашего бизнеса пишите в чат или звоните:\n"
-        "📞 +992 978117811\n📞 +992 944442044",
-        "btn_creator": "💬 Написать создателю",
+        "ad": "💛 <b>Наш магазин техники KORVONTJ.SHOP</b>\n"
+        "<blockquote>Ноутбуки 💻\nПринтери 🖨️\nХолодильник ❄️\nТелефонные аксессуары 🎧</blockquote>",
+        "btn_creator": "👉 Посмотреть",
+        "stories_usage": "Отправь ссылку на сторис или команду так: /stories логин",
+        "no_stories": "❌ Сторис не найдены: их нет, прошло больше 24 часов или аккаунт закрытый.",
+        "no_cookies": "❌ Для сторис бот должен быть авторизован в Instagram. Сообщите админу.",
+        "ig_denied": "❌ Instagram не пустил бота (cookies устарели или IP заблокирован). Сообщите админу.",
     },
     "tg": {
-        "welcome": "Салом! 👋\nПайванди видеоро аз YouTube, Instagram ё TikTok фиристед.",
+        "welcome": "Салом! 👋\nПайванди видеоро аз YouTube, Instagram ё TikTok фиристед.\n📸 Сторисҳои Instagram: пайванд ё /stories ном",
         "subscribe": "📢 Барои истифодаи бот ба каналҳои зерин обуна шавед ва тугмаи «Санҷиш»-ро пахш кунед.\n\n"
         "Ё дӯстонро даъват кунед: /invite",
         "btn_sub": "📢 Обуна шудан",
@@ -205,11 +214,13 @@ TEXTS = {
         "invite_done": "🎉 Шумо дӯстони кофӣ даъват кардед — обуна лозим нест!",
         "ref_new": "🎉 Дӯсти шумо ба истифодаи бот оғоз кард! Даъват шуд: {n}/{need}",
         "ref_unlocked": "🎁 Шумо {need} дӯстро даъват кардед — акнун обуна ба канал лозим нест!",
-        "ad": "👨‍💻 Созандаи бот: @IDIEVW\n\n"
-        "Барои сохтани вебсайт, чат-бот ё барномаҳои iOS/Android "
-        "барои бизнеси худ ба чат нависед ё занг занед:\n"
-        "📞 +992 978117811\n📞 +992 944442044",
-        "btn_creator": "💬 Ба созанда навиштан",
+        "ad": "💛 <b>Мағозаи техникаи мо KORVONTJ.SHOP</b>\n"
+        "<blockquote>Ноутбукҳо 💻\nПринтерҳо 🖨️\nЯхдон ❄️\nАксессуарҳои телефон 🎧</blockquote>",
+        "btn_creator": "👉 Дидан",
+        "stories_usage": "Пайванди сторис ё фармонро чунин фиристед: /stories ном",
+        "no_stories": "❌ Сторис ёфт нашуд: нест, зиёда аз 24 соат гузашт ё ҳисоб пӯшида аст.",
+        "no_cookies": "❌ Барои сторис бот бояд ба Instagram ворид шуда бошад. Ба админ хабар диҳед.",
+        "ig_denied": "❌ Instagram бот-ро роҳ надод (cookies кӯҳна шудаанд ё IP баста аст). Ба админ хабар диҳед.",
     },
 }
 
@@ -471,8 +482,16 @@ def yes_no_keyboard(uid: int, token: str) -> InlineKeyboardMarkup:
 
 def creator_keyboard(uid: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=t(uid, "btn_creator"), url=CREATOR_URL)]]
+        inline_keyboard=[[InlineKeyboardButton(text=t(uid, "btn_creator"), url=SHOP_URL)]]
     )
+
+
+async def send_ad(msg: Message, uid: int):
+    """Рекламный блок магазина после отправки файла."""
+    try:
+        await msg.answer(t(uid, "ad"), reply_markup=creator_keyboard(uid), parse_mode="HTML")
+    except Exception:
+        logging.exception("Не удалось отправить рекламу")
 
 
 # ====================== доступ: подписка и приглашения ======================
@@ -739,6 +758,189 @@ def download(url: str, mode: str, quality: str, out_dir: str, state: dict) -> li
     if mode == "photo":
         return files[:10]
     return [max(files, key=lambda p: p.stat().st_size)]
+
+
+# ====================== сторис Instagram ======================
+STORY_RE = re.compile(r"instagram\.com/stories/", re.IGNORECASE)
+IG_APP_ID = "936619743392459"
+IG_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+    "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+)
+
+
+def _ig_cookie_info() -> tuple[str, str]:
+    """Заголовок Cookie для Instagram и csrftoken из cookies.txt (формат Netscape)."""
+    if not COOKIES:
+        return "", ""
+    jar = http.cookiejar.MozillaCookieJar()
+    try:
+        jar.load(COOKIES, ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return "", ""
+    items = {c.name: c.value for c in jar if "instagram.com" in c.domain}
+    return "; ".join(f"{k}={v}" for k, v in items.items()), items.get("csrftoken", "")
+
+
+def _ig_open(url: str, cookie: str = "", csrf: str = "", binary: bool = False):
+    headers = {"User-Agent": IG_UA, "Referer": "https://www.instagram.com/"}
+    if not binary:
+        headers.update(
+            {"X-IG-App-ID": IG_APP_ID, "X-CSRFToken": csrf, "Cookie": cookie,
+             "X-Requested-With": "XMLHttpRequest"}
+        )
+    proxy = proxy_for("instagram.com")
+    handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []
+    opener = urllib.request.build_opener(*handlers)
+    try:
+        return opener.open(urllib.request.Request(url, headers=headers), timeout=60)
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("NO_FILES" if e.code == 404 else "IG_DENIED")
+
+
+def download_stories(url: str, out_dir: str, state: dict) -> list[Path]:
+    """Скачивает сторис (одну, все у пользователя или хайлайт) через API Instagram с cookies."""
+    cookie, csrf = _ig_cookie_info()
+    if "sessionid" not in cookie:
+        raise RuntimeError("NO_COOKIES")
+    story_id = None
+    m = re.search(r"instagram\.com/stories/highlights/(\d+)", url, re.IGNORECASE)
+    if m:
+        reel = f"highlight:{m.group(1)}"
+    else:
+        m = re.search(r"instagram\.com/stories/([A-Za-z0-9_.]+)/?(\d+)?", url, re.IGNORECASE)
+        if not m:
+            raise RuntimeError("NO_FILES")
+        username, story_id = m.group(1), m.group(2)
+        info = json.load(
+            _ig_open(
+                f"https://i.instagram.com/api/v1/users/web_profile_info/?username={username}",
+                cookie, csrf,
+            )
+        )
+        user = (info.get("data") or {}).get("user")
+        if not user:
+            raise RuntimeError("NO_FILES")
+        reel = user["id"]
+    data = json.load(
+        _ig_open(f"https://i.instagram.com/api/v1/feed/reels_media/?reel_ids={reel}", cookie, csrf)
+    )
+    node = (data.get("reels") or {}).get(reel)
+    if not node:
+        node = next(iter(data.get("reels_media") or []), None)
+    items = (node or {}).get("items") or []
+    if story_id:
+        items = [
+            it for it in items
+            if str(it.get("pk")) == story_id or str(it.get("id", "")).split("_")[0] == story_id
+        ]
+    items = items[:30]
+    if not items:
+        raise RuntimeError("NO_FILES")
+
+    out: list[Path] = []
+    for i, it in enumerate(items, 1):
+        if it.get("video_versions"):
+            src, ext = it["video_versions"][0]["url"], ".mp4"
+        else:
+            cands = (it.get("image_versions2") or {}).get("candidates") or []
+            if not cands:
+                continue
+            src, ext = cands[0]["url"], ".jpg"
+        path = Path(out_dir) / f"story_{i:02d}{ext}"
+        with _ig_open(src, binary=True) as r, open(path, "wb") as f:
+            shutil.copyfileobj(r, f)
+        state["pct"] = min(99, int(i * 100 / len(items)))
+        out.append(path)
+    if not out:
+        raise RuntimeError("NO_FILES")
+    return out
+
+
+def _story_media(p: Path, caption: str | None = None):
+    if p.suffix == ".mp4":
+        return InputMediaVideo(media=FSInputFile(p), supports_streaming=True, caption=caption)
+    return InputMediaPhoto(media=FSInputFile(p), caption=caption)
+
+
+async def process_story(bot: Bot, base: Message, status: Message, uid: int, url: str):
+    state = {"stage": "download", "pct": 0, "sent": 0, "total": 0, "ahead": 0}
+    active_users.add(uid)
+    recent[uid].append(time.time())
+    task = asyncio.create_task(progress_loop(status, uid, state))
+    tmp = tempfile.mkdtemp()
+    try:
+        async with download_sem:
+            paths = await asyncio.to_thread(download_stories, url, tmp, state)
+        state["stage"] = "processing"
+        files = [p for p in paths if p.stat().st_size <= MAX_SIZE]
+        for i in range(0, len(files), 10):
+            chunk = files[i : i + 10]
+            if len(chunk) == 1:
+                p = chunk[0]
+                if p.suffix == ".mp4":
+                    await base.answer_video(FSInputFile(p), supports_streaming=True, caption=CAPTION)
+                else:
+                    await base.answer_photo(FSInputFile(p), caption=CAPTION)
+            else:
+                await base.answer_media_group(
+                    [_story_media(p, CAPTION if j == 0 else None) for j, p in enumerate(chunk)]
+                )
+        task.cancel()
+        await status.delete()
+        add_download(uid, "story")
+        await credit_referral(bot, uid)
+        await send_ad(base, uid)
+    except Exception as e:
+        task.cancel()
+        logging.exception("Ошибка сторис")
+        msg = str(e)
+        if "NO_COOKIES" in msg or "IG_DENIED" in msg:
+            await status.edit_text(t(uid, "no_cookies" if "NO_COOKIES" in msg else "ig_denied"))
+            await notify_admins(
+                bot,
+                "⚠️ Сторис Instagram не скачиваются: " + msg[:100] + "\n"
+                "Обновите cookies Instagram (COOKIES_B64) или задайте PROXY_URL.",
+                key="ig_denied",
+            )
+        elif "NO_FILES" in msg:
+            await status.edit_text(t(uid, "no_stories"))
+        else:
+            await status.edit_text(f"{t(uid, 'fail')}{msg[:200]}")
+    finally:
+        task.cancel()
+        active_users.discard(uid)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+async def start_story(bot: Bot, message: Message, uid: int, url: str):
+    problem = limit_problem(uid)
+    if problem:
+        await message.answer(problem)
+        return
+    status = await message.answer(f"{t(uid, 'downloading')}\n{bar(0)} 0%")
+    await process_story(bot, message, status, uid, url)
+
+
+@dp.message(Command("stories"))
+async def stories_cmd(message: Message, command: CommandObject, bot: Bot):
+    uid = message.from_user.id
+    ensure_user(uid)
+    if get_lang(uid) is None:
+        await message.answer(LANG_PROMPT, reply_markup=lang_keyboard())
+        return
+    name = (command.args or "").strip().rstrip("/").split("/")[-1].lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9_.]{1,30}", name):
+        await message.answer(t(uid, "stories_usage"))
+        return
+    url = f"https://www.instagram.com/stories/{name}/"
+    missing = await missing_channels(bot, uid)
+    if missing:
+        key = uuid.uuid4().hex[:10]
+        pending[key] = url
+        await message.answer(t(uid, "subscribe"), reply_markup=subscribe_keyboard(uid, key, missing))
+        return
+    await start_story(bot, message, uid, url)
 
 
 # ====================== команды: язык, старт, id ======================
@@ -1043,6 +1245,10 @@ async def got_link(message: Message, bot: Bot):
         )
         return
 
+    if STORY_RE.search(url):  # сторис качаем сразу, без вопроса о формате
+        await start_story(bot, message, uid, url)
+        return
+
     row = get_user(uid)
     if row["auto"] and row["last_mode"]:
         # авто-режим: качаем сразу в прошлом формате
@@ -1077,6 +1283,15 @@ async def check_sub(call: CallbackQuery, bot: Bot):
             pass
         return
     await call.answer()
+    if STORY_RE.search(pending[key]):
+        url = pending.pop(key)
+        problem = limit_problem(uid)
+        if problem:
+            await call.message.edit_text(problem)
+            return
+        status = await call.message.edit_text(f"{t(uid, 'downloading')}\n{bar(0)} 0%")
+        await process_story(bot, call.message, status, uid, url)
+        return
     await call.message.edit_text(t(uid, "ready"), reply_markup=format_keyboard(uid, key))
 
 
@@ -1176,16 +1391,16 @@ async def process_download(
             state["total"] = paths[0].stat().st_size
             file = ProgressFile(paths[0], state)
             if mode == "mp3":
-                await base.answer_audio(file)
+                await base.answer_audio(file, caption=CAPTION)
             else:
-                await base.answer_video(file, supports_streaming=True)
+                await base.answer_video(file, supports_streaming=True, caption=CAPTION)
 
         task.cancel()
         await status.delete()
         add_download(uid, mode)
         await credit_referral(bot, uid)
         # реклама создателя после отправки файла
-        await base.answer(t(uid, "ad"), reply_markup=creator_keyboard(uid))
+        await send_ad(base, uid)
     except Exception as e:
         task.cancel()
         logging.exception("Ошибка загрузки")
@@ -1254,12 +1469,14 @@ async def on_no_audio(call: CallbackQuery, bot: Bot):
     status = await call.message.edit_text(f"{t(uid, 'sending')}\n{bar(0)} 0%")
     task = asyncio.create_task(progress_loop(status, uid, state))
     try:
-        await call.message.answer_video(ProgressFile(path, state), supports_streaming=True)
+        await call.message.answer_video(
+            ProgressFile(path, state), supports_streaming=True, caption=CAPTION
+        )
         task.cancel()
         await status.delete()
         add_download(uid, "video")
         await credit_referral(bot, uid)
-        await call.message.answer(t(uid, "ad"), reply_markup=creator_keyboard(uid))
+        await send_ad(call.message, uid)
     except Exception as e:
         task.cancel()
         logging.exception("Ошибка отправки")
@@ -1290,12 +1507,14 @@ async def setup_commands(bot: Bot):
     ru = [
         BotCommand(command="start", description="🚀 Начать"),
         BotCommand(command="lang", description="🌐 Сменить язык / Иваз кардани забон"),
+        BotCommand(command="stories", description="📸 Сторис Instagram"),
         BotCommand(command="auto", description="⚡ Авто-режим формата"),
         BotCommand(command="invite", description="👥 Пригласить друзей"),
     ]
     tg = [
         BotCommand(command="start", description="🚀 Оғоз"),
         BotCommand(command="lang", description="🌐 Иваз кардани забон / Сменить язык"),
+        BotCommand(command="stories", description="📸 Сторисҳои Instagram"),
         BotCommand(command="auto", description="⚡ Реҷаи худкори формат"),
         BotCommand(command="invite", description="👥 Даъвати дӯстон"),
     ]
