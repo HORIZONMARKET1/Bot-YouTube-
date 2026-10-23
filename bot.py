@@ -476,12 +476,48 @@ def creator_keyboard(uid: int) -> InlineKeyboardMarkup:
 
 
 # ====================== доступ: подписка и приглашения ======================
+_warned: dict = {}
+
+
+async def notify_admins(bot: Bot, text: str, key: str | None = None, every: int = 3600):
+    """Пишет админам. С key — не чаще раза в `every` секунд, чтобы не спамить."""
+    now = time.time()
+    if key:
+        if now - _warned.get(key, 0) < every:
+            return
+        _warned[key] = now
+    for aid in ADMIN_IDS:
+        try:
+            await bot.send_message(aid, text)
+        except Exception:
+            pass
+
+
+async def bot_admin_status(bot: Bot, chat_id) -> tuple[bool, str]:
+    """Админ ли бот в канале. Без этого подписку проверить нельзя."""
+    try:
+        me = await bot.get_chat_member(chat_id, bot.id)
+    except Exception as e:
+        return False, str(e)[:150]
+    if me.status in ("administrator", "creator"):
+        return True, ""
+    return False, f"статус бота в канале: {me.status}"
+
+
 async def is_member(bot: Bot, chat_id: int, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(chat_id, user_id)
-    except Exception:
-        # бота убрали из админов канала или канал удалён — не блокируем людей из-за этого
+    except Exception as e:
+        # бота нет в админах канала или канал удалён — людей не блокируем, но админу сообщаем
         logging.exception("Не удалось проверить подписку на %s (бот админ канала?)", chat_id)
+        await notify_admins(
+            bot,
+            f"⚠️ Не могу проверить подписку на канал {chat_id}: {str(e)[:150]}\n\n"
+            "Пока это не исправлено, подписка НЕ проверяется и бот открыт всем.\n"
+            "Добавьте этого бота в администраторы канала (Канал → Администраторы → Добавить), "
+            "затем проверьте: /channels",
+            key=f"m{chat_id}",
+        )
         return True
     if member.status in ("member", "administrator", "creator"):
         return True
@@ -884,12 +920,16 @@ async def broadcast_confirm(call: CallbackQuery, bot: Bot):
 awaiting_channel: set[int] = set()
 
 
-def channels_view():
+async def channels_view(bot: Bot):
     chans = list_channels()
     if chans:
-        text = "📢 Каналы для обязательной подписки:\n\n" + "\n".join(
-            f"{i}. {c['title']}" for i, c in enumerate(chans, 1)
-        )
+        lines = []
+        for i, c in enumerate(chans, 1):
+            ok, err = await bot_admin_status(bot, c["chat_id"])
+            lines.append(f"{i}. {c['title']} — " + ("✅ бот админ" if ok else f"⚠️ бот НЕ админ ({err})"))
+        text = "📢 Каналы для обязательной подписки:\n\n" + "\n".join(lines)
+        if any("НЕ админ" in l for l in lines):
+            text += "\n\n⚠️ Добавьте бота в администраторы канала, иначе подписка не проверяется."
     else:
         text = "Каналов нет — подписка сейчас не требуется."
     rows = [
@@ -901,10 +941,10 @@ def channels_view():
 
 
 @dp.message(Command("channels"))
-async def channels_cmd(message: Message):
+async def channels_cmd(message: Message, bot: Bot):
     if message.from_user.id not in ADMIN_IDS:
         return
-    text, kb = channels_view()
+    text, kb = await channels_view(bot)
     await message.answer(text, reply_markup=kb)
 
 
@@ -933,13 +973,13 @@ async def channel_add_start(call: CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("chdel:"))
-async def channel_delete(call: CallbackQuery):
+async def channel_delete(call: CallbackQuery, bot: Bot):
     if call.from_user.id not in ADMIN_IDS:
         await call.answer()
         return
     delete_channel(int(call.data.split(":", 1)[1]))
     await call.answer("Удалено")
-    text, kb = channels_view()
+    text, kb = await channels_view(bot)
     await call.message.edit_text(text, reply_markup=kb)
 
 
@@ -979,7 +1019,7 @@ async def channel_input(message: Message, bot: Bot):
         await message.answer(f"✅ Канал добавлен: {info.title}")
     else:
         await message.answer("Этот канал уже есть в списке.")
-    text, kb = channels_view()
+    text, kb = await channels_view(bot)
     await message.answer(text, reply_markup=kb)
 
 
@@ -1288,6 +1328,21 @@ async def main():
             add_channel(info.id, info.title or CHANNEL, CHANNEL_URL)
         except Exception:
             logging.warning("Не удалось добавить канал по умолчанию — добавьте через /channels")
+            await notify_admins(
+                bot, f"⚠️ Не удалось добавить канал {CHANNEL}. Добавьте его вручную: /channels"
+            )
+    bad = []
+    for c in list_channels():
+        ok, err = await bot_admin_status(bot, c["chat_id"])
+        if not ok:
+            bad.append(f"• {c['title']}: {err}")
+    if bad:
+        await notify_admins(
+            bot,
+            "⚠️ Бот запущен, но подписка на эти каналы не проверяется (бот не админ):\n"
+            + "\n".join(bad)
+            + "\n\nДобавьте бота в администраторы этих каналов. Проверка: /channels",
+        )
     cleanup = asyncio.create_task(cleanup_loop())
     bg_tasks.add(cleanup)
     await bot.delete_webhook(drop_pending_updates=True)
