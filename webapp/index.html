@@ -57,8 +57,16 @@ body[data-state="listening"] .rings i:nth-child(3){transform:scale(calc(1.4 + va
 .o-arcs .a2{animation-delay:.35s}
 .o-count{transition:opacity .25s;font-variant-numeric:tabular-nums}
 .o-prog{transition:opacity .3s;opacity:0}
-body[data-state="listening"] .o-tri{opacity:0;transform:scale(.6)}
-body[data-state="listening"] .o-count{opacity:1}
+body[data-state="listening"] .o-tri,body[data-state="searching"] .o-tri{opacity:0;transform:scale(.4) rotate(-25deg)}
+body[data-state="listening"] .o-halo,body[data-state="searching"] .o-halo{opacity:.22}
+body[data-state="listening"] .orb{animation:orbpop .6s cubic-bezier(.2,1.3,.3,1)}
+
+/* значок диктофона: кнопка превращается в микрофон */
+.o-mic{opacity:0;transform:scale(.3) rotate(25deg);transform-box:fill-box;transform-origin:center;
+  transition:opacity .3s,transform .55s cubic-bezier(.2,1.5,.3,1)}
+body[data-state="listening"] .o-mic,body[data-state="searching"] .o-mic{opacity:1;transform:none}
+.o-micfill{transform-box:fill-box;transform-origin:50% 100%;transform:scaleY(calc(.08 + var(--lvl)*.92));transition:transform .08s linear}
+body[data-state="searching"] .o-micfill{animation:micscan 1.3s ease-in-out infinite}
 body[data-state="listening"] .o-arcs{transform:scale(calc(1 + var(--lvl)*.16))}
 body[data-state="listening"] .o-arcs path{animation-duration:1s}
 body[data-state="listening"] .o-prog{opacity:1;animation:fillp var(--dur,11s) linear forwards}
@@ -97,6 +105,21 @@ body[data-state="notfound"] .stage,body[data-state="error"] .stage{display:flex}
 body[data-state="result"] .result,body[data-state="sending"] .result,body[data-state="sent"] .result{display:flex}
 body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="error"]) .alt{visibility:hidden}
 
+/* запись: индикатор и живая волна под кнопкой */
+.under{position:relative;width:min(88vw,340px);height:clamp(56px,8dvh,72px);margin-top:clamp(2px,1.2dvh,12px);
+  display:flex;align-items:center;justify-content:center}
+.under .alt{margin-top:0}
+.rec{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  opacity:0;transform:translateY(14px) scale(.96);pointer-events:none;
+  transition:opacity .35s,transform .5s cubic-bezier(.2,1.2,.3,1)}
+body[data-state="listening"] .rec,body[data-state="searching"] .rec{opacity:1;transform:none}
+.rec-top{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;letter-spacing:.14em;
+  color:var(--ink-2);font-variant-numeric:tabular-nums;text-transform:uppercase}
+.rec-time{color:#fff;letter-spacing:.06em}
+.rec-dot{width:9px;height:9px;border-radius:50%;background:#FF3B5C;animation:recpulse 1.2s ease-out infinite}
+body[data-state="searching"] .rec-dot{background:var(--cyan);animation-name:recpulse2}
+#wave{display:block;width:100%;height:clamp(28px,4.6dvh,40px)}
+
 /* подпись создателя */
 .credit{flex:0 0 auto;width:100%;max-width:380px;text-align:center;padding-top:clamp(6px,1.4dvh,12px);
   border-top:1px solid rgba(255,255,255,.12);font-size:clamp(10px,1.55dvh,12px);line-height:1.38;color:var(--ink-2)}
@@ -113,19 +136,23 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
 @keyframes wave{0%,100%{opacity:1}50%{opacity:.62}}
 @keyframes rise{from{transform:translateY(24px) scale(.92);opacity:0}to{transform:none;opacity:1}}
 @keyframes draw{to{stroke-dashoffset:0}}
+@keyframes orbpop{0%{transform:scale(1)}35%{transform:scale(.88)}100%{transform:scale(1)}}
+@keyframes micscan{0%,100%{transform:scaleY(.1)}50%{transform:scaleY(.95)}}
+@keyframes recpulse{0%{box-shadow:0 0 0 0 rgba(255,59,92,.65)}100%{box-shadow:0 0 0 10px rgba(255,59,92,0)}}
+@keyframes recpulse2{0%{box-shadow:0 0 0 0 rgba(34,230,246,.65)}100%{box-shadow:0 0 0 10px rgba(34,230,246,0)}}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important}}
 @media (max-height:520px){.credit .biz{display:none}}
 </style>
 </head>
-<body data-state="idle">
+<body data-state="error">
 <div class="sky"></div><div class="tiles"></div><div class="cover-bg" id="coverBg"></div>
 
 <main>
   <div class="fit" id="fit"><div class="fit-inner" id="inner">
     <div class="stage">
       <div class="copy">
-        <h1 id="h">Какая это песня?</h1>
-        <p class="sub" id="s">Включи музыку рядом и нажми «Слушать»</p>
+        <h1 id="h">Не получилось</h1>
+        <p class="sub" id="s">Открой это окно из бота</p>
       </div>
       <button class="orb" id="orb" type="button" aria-label="Слушать">
         <span class="rings"><i></i><i></i><i></i></span>
@@ -154,6 +181,7 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
   <stop offset="0" stop-color="#FFFFFF"></stop><stop offset="1" stop-color="#F3F8FF"></stop>
  </linearGradient>
  <clipPath id="cIn"><circle r="438"></circle></clipPath>
+ <clipPath id="cMic"><rect x="-70" y="-190" width="140" height="210" rx="70"></rect></clipPath>
  <filter id="fBlurL" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="30"></feGaussianBlur></filter>
  <filter id="fBlurM" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="12"></feGaussianBlur></filter>
  <filter id="fBlurS" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"></feGaussianBlur></filter>
@@ -181,18 +209,33 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
   <path class="a1 R" d="M206.6,-118 A158.3,158.3 0 0 1 207.6,60" stroke="url(#gArc)" stroke-width="41"></path>
   <path class="a2 R" d="M265.2,-181 A235.5,235.5 0 0 1 269.3,115" stroke="url(#gArc)" stroke-width="44"></path>
  </g>
+ <g class="o-mic">
+  <g filter="url(#fBlurM)" opacity=".55">
+   <rect x="-70" y="-190" width="140" height="210" rx="70" fill="#0E9BFF" stroke="#0E9BFF" stroke-width="50"></rect>
+  </g>
+  <rect x="-70" y="-190" width="140" height="210" rx="70" fill="url(#gTri)"></rect>
+  <g clip-path="url(#cMic)"><rect class="o-micfill" x="-72" y="-192" width="144" height="214" fill="url(#gArc)"></rect></g>
+  <path d="M-135,-40 A135,135 0 0 0 135,-40" fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round"></path>
+  <path d="M0,95 V140 M-62,140 H62" fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round"></path>
+ </g>
  <g class="o-tri">
   <polygon points="-86.0,-139.1 -86.0,71.1 89.7,-34.0" fill="url(#gTri)" stroke="url(#gTri)" stroke-width="68" stroke-linejoin="round"></polygon>
  </g>
 </g>
 <text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-count" x="0" y="40" text-anchor="middle" font-size="300" font-weight="800" fill="#fff" opacity="0">0</text>
 <g class="o-labelwrap">
- <text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-label-glow" x="2" y="266" text-anchor="middle" font-size="98" font-weight="800" fill="#7FE9FF" opacity=".55" filter="url(#fBlurS)" textLength="476" lengthAdjust="spacingAndGlyphs">СЛУШАТЬ</text>
- <text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-label" x="2" y="266" text-anchor="middle" font-size="98" font-weight="800" fill="#fff" textLength="476" lengthAdjust="spacingAndGlyphs">СЛУШАТЬ</text>
+ <text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-label-glow" x="2" y="266" text-anchor="middle" font-size="98" font-weight="800" fill="#7FE9FF" opacity=".55" filter="url(#fBlurS)" textLength="476" lengthAdjust="spacingAndGlyphs">ЕЩЁ РАЗ</text>
+ <text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-label" x="2" y="266" text-anchor="middle" font-size="98" font-weight="800" fill="#fff" textLength="476" lengthAdjust="spacingAndGlyphs">ЕЩЁ РАЗ</text>
 </g>
 </svg>
       </button>
-      <button class="alt" id="alt" type="button">Загрузить файл</button>
+      <div class="under">
+        <button class="alt" id="alt" type="button">Загрузить файл</button>
+        <div class="rec" aria-hidden="true">
+          <div class="rec-top"><i class="rec-dot"></i><span id="recTag">REC</span><span class="rec-time" id="recTime">0:00</span></div>
+          <canvas id="wave"></canvas>
+        </div>
+      </div>
       <input type="file" id="file" accept="audio/*,video/*" hidden="">
     </div>
 
@@ -259,6 +302,55 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
   const body = document.body, orb = $('orb'), inner = $('inner'), fitBox = $('fit');
   const LISTEN_MS = 11000;
   let state = 'idle', stream = null, rec = null, ctx = null, raf = 0, tick = 0, token = null, canceled = false;
+  let analyser = null, fbuf = null, t0 = 0, waveRaf = 0;
+  const wave = $('wave'), recTime = $('recTime'), recTag = $('recTag');
+  const BARS = 37, bars = new Float32Array(BARS);
+
+  /* ---------- живая волна записи ---------- */
+  function rr(c, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    c.moveTo(x + r, y); c.lineTo(x + w - r, y); c.arcTo(x + w, y, x + w, y + r, r);
+    c.lineTo(x + w, y + h - r); c.arcTo(x + w, y + h, x + w - r, y + h, r);
+    c.lineTo(x + r, y + h); c.arcTo(x, y + h, x, y + h - r, r);
+    c.lineTo(x, y + r); c.arcTo(x, y, x + r, y, r); c.closePath();
+  }
+  function clearWave() {
+    const c = wave.getContext('2d'); c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, wave.width, wave.height); bars.fill(0);
+  }
+  function waveLoop(now) {
+    waveRaf = 0;
+    if (state !== 'listening' && state !== 'searching') return clearWave();
+    now = now || performance.now();
+    const dpr = Math.min(2, window.devicePixelRatio || 1), W = wave.clientWidth, H = wave.clientHeight;
+    if (!W || !H) { waveRaf = requestAnimationFrame(waveLoop); return; }
+    if (wave.width !== Math.round(W * dpr)) { wave.width = Math.round(W * dpr); wave.height = Math.round(H * dpr); }
+    const c = wave.getContext('2d'); c.setTransform(dpr, 0, 0, dpr, 0, 0); c.clearRect(0, 0, W, H);
+    const t = now / 1000, mid = (BARS - 1) / 2, listening = state === 'listening';
+    if (listening && analyser) analyser.getByteFrequencyData(fbuf);
+    const gap = 4, bw = (W - gap * (BARS - 1)) / BARS;
+    const g = c.createLinearGradient(0, 0, W, 0);
+    g.addColorStop(0, '#1E6BFF'); g.addColorStop(.5, '#22E6F6'); g.addColorStop(1, '#1E6BFF');
+    c.fillStyle = g; c.shadowColor = 'rgba(34,230,246,.75)'; c.shadowBlur = 10;
+    c.beginPath();
+    for (let i = 0; i < BARS; i++) {
+      const k = Math.abs(i - mid) / mid; let target;
+      if (!listening) target = (.16 + .26 * (.5 + .5 * Math.sin(t * 4 - i * .45))) * (1 - .3 * k);
+      else if (analyser) {
+        const v = fbuf[2 + Math.floor(k * k * 70)] / 255;
+        target = Math.min(1, Math.pow(v, 1.15) * 1.3 + .07 + .04 * Math.sin(t * 4 + i * .6));
+      } else target = (.2 + .15 * Math.sin(t * 5 + i * .7)) * (1 - .4 * k);
+      bars[i] += (target - bars[i]) * (target > bars[i] ? .5 : .14);
+      const h = Math.max(4, bars[i] * H);
+      rr(c, i * (bw + gap), (H - h) / 2, bw, h, bw / 2);
+    }
+    c.fill();
+    if (listening) {
+      const sec = Math.min(Math.round(LISTEN_MS / 1000), Math.floor((now - t0) / 1000)), txt = '0:' + String(sec).padStart(2, '0');
+      if (recTime.textContent !== txt) recTime.textContent = txt;
+    }
+    waveRaf = requestAnimationFrame(waveLoop);
+  }
+  function startWave() { if (!waveRaf) waveRaf = requestAnimationFrame(waveLoop); }
 
   const haptic = (t, k) => { try { tg && tg.HapticFeedback && (t === 'n' ? tg.HapticFeedback.notificationOccurred(k) : tg.HapticFeedback.impactOccurred(k)); } catch (e) {} };
 
@@ -285,6 +377,11 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
   }
   function set(s, h, sub) {
     state = s; body.dataset.state = s;
+    if (s === 'listening' || s === 'searching') {
+      recTag.textContent = s === 'listening' ? 'REC' : T.searchLbl;
+      recTime.style.display = s === 'listening' ? '' : 'none';
+      startWave();
+    }
     if (h !== undefined) $('h').textContent = h;
     if (sub !== undefined) $('s').textContent = sub;
     queueFit();
@@ -310,7 +407,7 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
     document.documentElement.style.setProperty('--lvl', 0);
     try { stream && stream.getTracks().forEach(t => t.stop()); } catch (e) {}
     try { ctx && ctx.close(); } catch (e) {}
-    stream = ctx = null;
+    stream = ctx = analyser = null;
   }
   async function listen() {
     if (state !== 'idle' && state !== 'notfound' && state !== 'error') return;
@@ -331,7 +428,8 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
     };
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
-      ctx = new AC(); const an = ctx.createAnalyser(); an.fftSize = 512;
+      ctx = new AC(); const an = ctx.createAnalyser(); an.fftSize = 512; an.smoothingTimeConstant = .55;
+      analyser = an; fbuf = new Uint8Array(an.frequencyBinCount);
       ctx.createMediaStreamSource(stream).connect(an);
       const buf = new Uint8Array(an.fftSize); let sm = 0;
       const loop = () => {
@@ -344,6 +442,7 @@ body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="erro
       loop();
     } catch (e) {}
     body.style.setProperty('--dur', LISTEN_MS + 'ms');
+    t0 = performance.now(); recTime.textContent = '0:00';
     set('listening', T.listening, T.listeningSub); setLabel(T.listenLbl);
     let left = Math.round(LISTEN_MS / 1000); document.querySelector('.o-count').textContent = left;
     tick = setInterval(() => { left = Math.max(0, left - 1); document.querySelector('.o-count').textContent = left; }, 1000);
