@@ -1309,11 +1309,9 @@ BTN_INVITE = {"👥 Пригласить друга", "👥 Даъвати дӯ�
 
 def main_keyboard(uid: int) -> ReplyKeyboardMarkup:
     music = t(uid, "btn_music")
-    first = (
-        KeyboardButton(text=music, web_app=WebAppInfo(url=webapp_link(uid)))
-        if WEBAPP_URL
-        else KeyboardButton(text=music)
-    )
+    # обычная кнопка: Mini App из reply-клавиатуры не получает initData (ошибка авторизации),
+    # поэтому Mini App открываем inline-кнопкой в music_button
+    first = KeyboardButton(text=music)
     return ReplyKeyboardMarkup(
         keyboard=[[first], [KeyboardButton(text=t(uid, "btn_invite"))]],
         resize_keyboard=True,
@@ -1350,7 +1348,15 @@ async def music_button(message: Message):
     """Срабатывает, только если Mini App не настроен (нет домена): объясняем, как искать музыку."""
     uid = message.from_user.id
     ensure_user(uid)
-    await message.answer(t(uid, "music_no_app"))
+    if not WEBAPP_URL:
+        await message.answer(t(uid, "music_no_app"))
+        return
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(text=t(uid, "btn_music"), web_app=WebAppInfo(url=webapp_link(uid)))
+        ]]
+    )
+    await message.answer(t(uid, "btn_music"), reply_markup=kb)
 
 
 @dp.message(Command("menu"))
