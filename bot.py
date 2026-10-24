@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import socket
 import uuid
 import json
 import http.cookiejar
@@ -93,6 +94,7 @@ CHANNEL = "@horizonmarkettj"  # канал для обязательной по�
 CHANNEL_URL = "https://t.me/horizonmarkettj"
 CREATOR_URL = "https://t.me/IDIEVW"
 SHOP_URL = "https://korvontj.shop"  # ссылка для кнопки «Посмотреть» (магазин)
+BOT_VERSION = "2026-10-24 stories+caption+shop"
 CAPTION = "❤️ @IDIEVW"  # подпись под видео, музыкой и сторис
 # ID администратора(ов) через запятую. Свой ID можно узнать командой /id
 ADMIN_IDS = {int(x) for x in os.getenv("ADMIN_ID", "").replace(" ", "").split(",") if x.isdigit()}
@@ -764,8 +766,8 @@ def download(url: str, mode: str, quality: str, out_dir: str, state: dict) -> li
 STORY_RE = re.compile(r"instagram\.com/stories/", re.IGNORECASE)
 IG_APP_ID = "936619743392459"
 IG_UA = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
-    "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 )
 
 
@@ -786,8 +788,9 @@ def _ig_open(url: str, cookie: str = "", csrf: str = "", binary: bool = False):
     headers = {"User-Agent": IG_UA, "Referer": "https://www.instagram.com/"}
     if not binary:
         headers.update(
-            {"X-IG-App-ID": IG_APP_ID, "X-CSRFToken": csrf, "Cookie": cookie,
-             "X-Requested-With": "XMLHttpRequest"}
+            {"X-IG-App-ID": IG_APP_ID, "X-ASBD-ID": "198387", "X-IG-WWW-Claim": "0",
+             "X-CSRFToken": csrf, "Cookie": cookie, "Origin": "https://www.instagram.com",
+             "Accept": "*/*", "X-Requested-With": "XMLHttpRequest"}
         )
     proxy = proxy_for("instagram.com")
     handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []
@@ -795,10 +798,32 @@ def _ig_open(url: str, cookie: str = "", csrf: str = "", binary: bool = False):
     try:
         return opener.open(urllib.request.Request(url, headers=headers), timeout=60)
     except urllib.error.HTTPError as e:
-        raise RuntimeError("NO_FILES" if e.code == 404 else "IG_DENIED")
+        if e.code == 404:
+            raise RuntimeError("NO_FILES")
+        try:
+            body = e.read(300).decode("utf-8", "replace").replace("\n", " ")
+        except Exception:
+            body = ""
+        raise RuntimeError(f"IG_DENIED HTTP {e.code} {body}")
 
 
 def download_stories(url: str, out_dir: str, state: dict) -> list[Path]:
+    """Сначала API Instagram; если отказал — для одной сторис пробуем yt-dlp."""
+    try:
+        return _download_stories_api(url, out_dir, state)
+    except RuntimeError as e:
+        if "IG_DENIED" not in str(e):
+            raise
+        api_err = e
+    if re.search(r"/stories/[^/]+/\d+", url) and "/highlights/" not in url:
+        try:
+            return download(url, "video", "1080", out_dir, state)
+        except Exception as e2:
+            logging.warning("yt-dlp для сторис тоже не сработал: %s", e2)
+    raise api_err
+
+
+def _download_stories_api(url: str, out_dir: str, state: dict) -> list[Path]:
     """Скачивает сторис (одну, все у пользователя или хайлайт) через API Instagram с cookies."""
     cookie, csrf = _ig_cookie_info()
     if "sessionid" not in cookie:
@@ -899,7 +924,7 @@ async def process_story(bot: Bot, base: Message, status: Message, uid: int, url:
             await status.edit_text(t(uid, "no_cookies" if "NO_COOKIES" in msg else "ig_denied"))
             await notify_admins(
                 bot,
-                "⚠️ Сторис Instagram не скачиваются: " + msg[:100] + "\n"
+                "⚠️ Сторис Instagram не скачиваются: " + msg[:300] + "\n"
                 "Обновите cookies Instagram (COOKIES_B64) или задайте PROXY_URL.",
                 key="ig_denied",
             )
@@ -1017,6 +1042,22 @@ async def stats_cmd(message: Message):
     if message.from_user.id not in ADMIN_IDS:
         return
     await message.answer(stats_text())
+
+
+@dp.message(Command("version"))
+async def version_cmd(message: Message):
+    """Админ: какая версия кода работает и на какой машине (помогает найти второй экземпляр бота)."""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    cookie, _ = _ig_cookie_info()
+    await message.answer(
+        f"Версия: {BOT_VERSION}\n"
+        f"Машина: {socket.gethostname()}\n"
+        f"yt-dlp: {_installed_ytdlp_version()}\n"
+        f"Cookies Instagram: {'есть' if 'sessionid' in cookie else 'НЕТ'}\n"
+        f"Прокси: {'есть' if PROXY_URL else 'нет'}\n"
+        f"Админов: {len(ADMIN_IDS)}"
+    )
 
 
 @dp.message(Command("update"))
@@ -1538,6 +1579,7 @@ async def main():
     global BOT_USERNAME
     if not TOKEN:
         raise SystemExit("Задай переменную окружения BOT_TOKEN")
+    logging.info("Версия кода: %s, машина: %s", BOT_VERSION, socket.gethostname())
     bot = Bot(TOKEN)
     BOT_USERNAME = (await bot.get_me()).username
     await setup_commands(bot)
