@@ -1,0 +1,432 @@
+<html lang="ru" style="--tg-viewport-height: 100vh; --tg-viewport-stable-height: 100vh; --lvl: 0;"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#030B2E">
+<title>Поиск музыки</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --navy:#030B2E; --navy-2:#071A6B; --blue:#1E6BFF; --cyan:#22E6F6; --sky:#12B9FF;
+  --ink:#F4F7FF; --ink-2:rgba(236,243,255,.72); --ink-3:rgba(236,243,255,.42);
+  --lvl:0; --vh:100dvh;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--navy);color:var(--ink);overflow:hidden;overscroll-behavior:none;
+  font-family:"Montserrat","SF Pro Display","Segoe UI",Roboto,"Helvetica Neue",Arial,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%}
+body{position:fixed;inset:0;width:100%}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+a{color:inherit}
+
+.sky{position:fixed;inset:0;background:
+  radial-gradient(110% 70% at 50% 18%,#0B2A9E 0%,rgba(11,42,158,0) 62%),
+  radial-gradient(70% 50% at 100% 100%,rgba(18,185,255,.20) 0%,transparent 65%),
+  radial-gradient(70% 50% at 0% 100%,rgba(30,107,255,.22) 0%,transparent 65%),var(--navy)}
+.cover-bg{position:fixed;inset:-10%;background-size:cover;background-position:center;
+  filter:blur(60px) saturate(1.5);opacity:0;transition:opacity .8s}
+body[data-state="result"] .cover-bg,body[data-state="sending"] .cover-bg,body[data-state="sent"] .cover-bg{opacity:.5}
+.tiles{position:fixed;inset:0;opacity:.06;pointer-events:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='-32 -32 64 64'%3E%3Cg fill='none' stroke='white' stroke-width='1'%3E%3Crect x='-14' y='-14' width='28' height='28'/%3E%3Crect x='-14' y='-14' width='28' height='28' transform='rotate(45)'/%3E%3C/g%3E%3C/svg%3E");
+  -webkit-mask-image:radial-gradient(70% 50% at 50% 40%,#000,transparent 80%);mask-image:radial-gradient(70% 50% at 50% 40%,#000,transparent 80%)}
+
+/* каркас: всё помещается без прокрутки */
+main{position:relative;height:100%;display:flex;flex-direction:column;align-items:center;
+  padding:max(10px,env(safe-area-inset-top)) 18px max(10px,env(safe-area-inset-bottom))}
+.fit{flex:1 1 auto;min-height:0;width:100%;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.fit-inner{display:flex;flex-direction:column;align-items:center;transform-origin:center center;will-change:transform}
+
+.copy{display:flex;flex-direction:column;gap:clamp(4px,1dvh,8px);margin-bottom:clamp(6px,2.4dvh,22px);max-width:340px;text-align:center}
+h1{font-size:clamp(21px,3.9dvh,30px);line-height:1.12;font-weight:800;letter-spacing:-.02em}
+.sub{font-size:clamp(12.5px,2dvh,15px);line-height:1.38;color:var(--ink-2)}
+
+/* кнопка «Слушать» — по присланному фото */
+.orb{position:relative;display:block;width:min(92vw,46dvh,420px);aspect-ratio:1;border-radius:50%;
+  transition:transform .22s cubic-bezier(.2,.8,.2,1);transform:scale(calc(1 + var(--lvl)*.04))}
+.orb:active{transform:scale(.97)}
+.orb:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}
+.orb-svg{position:relative;width:100%;height:100%;display:block;overflow:visible}
+.rings i{position:absolute;inset:9.68%;border-radius:50%;border:2px solid rgba(34,230,246,.55);opacity:0;pointer-events:none}
+body[data-state="idle"] .rings i,body[data-state="notfound"] .rings i,body[data-state="error"] .rings i{animation:ring 3.6s ease-out infinite}
+.rings i:nth-child(2){animation-delay:1.2s!important}.rings i:nth-child(3){animation-delay:2.4s!important}
+body[data-state="listening"] .rings i{opacity:calc(.25 + var(--lvl)*.5);transform:scale(calc(1.1 + var(--lvl)*.45));transition:transform .09s,opacity .09s}
+body[data-state="listening"] .rings i:nth-child(2){transform:scale(calc(1.24 + var(--lvl)*.7))}
+body[data-state="listening"] .rings i:nth-child(3){transform:scale(calc(1.4 + var(--lvl)*.95))}
+
+.o-arcs,.o-tri{transform-box:fill-box;transform-origin:center;transition:opacity .35s,transform .2s}
+.o-arcs path{animation:wave 3.2s ease-in-out infinite}
+.o-arcs .a2{animation-delay:.35s}
+.o-count{transition:opacity .25s;font-variant-numeric:tabular-nums}
+.o-prog{transition:opacity .3s;opacity:0}
+body[data-state="listening"] .o-tri{opacity:0;transform:scale(.6)}
+body[data-state="listening"] .o-count{opacity:1}
+body[data-state="listening"] .o-arcs{transform:scale(calc(1 + var(--lvl)*.16))}
+body[data-state="listening"] .o-arcs path{animation-duration:1s}
+body[data-state="listening"] .o-prog{opacity:1;animation:fillp var(--dur,11s) linear forwards}
+body[data-state="searching"] .orb{animation:think 1.4s ease-in-out infinite}
+body[data-state="searching"] .o-arcs path{animation-duration:.9s}
+
+/* результат */
+.result{display:none;flex-direction:column;align-items:center;width:100%;max-width:360px}
+.cover{position:relative;width:min(58vw,30dvh,236px);aspect-ratio:1;border-radius:24px;overflow:hidden;
+  background:linear-gradient(135deg,#1E6BFF,#12B9FF 60%,#22E6F6);
+  box-shadow:0 30px 70px -18px rgba(0,0,0,.65),0 0 0 1px rgba(255,255,255,.16) inset;animation:rise .6s cubic-bezier(.2,.8,.2,1)}
+.cover img{width:100%;height:100%;object-fit:cover;display:block}
+.cover .ph{position:absolute;inset:0;display:grid;place-items:center;font-size:clamp(40px,8dvh,64px)}
+.meta{margin:clamp(10px,3dvh,24px) 0 clamp(10px,2.6dvh,20px);display:flex;flex-direction:column;gap:5px;width:100%;text-align:center}
+.meta h2{font-size:clamp(20px,3.6dvh,26px);line-height:1.15;font-weight:800;letter-spacing:-.02em;overflow-wrap:anywhere}
+.meta .artist{font-size:clamp(14px,2.2dvh,17px);color:var(--ink-2)}
+.chips{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:6px}
+.chips span{font-size:12.5px;padding:5px 12px;border-radius:99px;background:rgba(255,255,255,.1);box-shadow:0 0 0 1px rgba(255,255,255,.14) inset;color:var(--ink-2)}
+.actions{display:flex;flex-direction:column;gap:10px;width:100%}
+.btn{height:clamp(46px,7dvh,56px);border-radius:18px;font-size:clamp(15px,2.2dvh,17px);font-weight:700;display:flex;align-items:center;justify-content:center;gap:10px;transition:transform .15s,opacity .2s}
+.btn:active{transform:scale(.98)}
+.btn.primary{background:linear-gradient(120deg,#1E6BFF,#12B9FF 62%,#22E6F6);color:#fff;box-shadow:0 14px 34px -10px rgba(18,185,255,.75),0 0 0 1px rgba(255,255,255,.2) inset}
+.btn.ghost{color:var(--ink);background:rgba(255,255,255,.08);box-shadow:0 0 0 1px rgba(255,255,255,.16) inset}
+.btn[disabled]{opacity:.8;pointer-events:none}
+.btn svg{width:22px;height:22px}
+.spin{width:22px;height:22px;border-radius:50%;border:3px solid rgba(255,255,255,.3);border-top-color:#fff;animation:spin .8s linear infinite}
+.sent-mark{width:26px;height:26px}
+.sent-mark path{stroke:#fff;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:30;stroke-dashoffset:30;animation:draw .5s .1s ease forwards}
+
+.alt{margin-top:clamp(2px,1.2dvh,12px);font-size:clamp(12.5px,1.9dvh,14.5px);color:var(--ink-2);text-decoration:underline;text-underline-offset:4px;text-decoration-color:var(--ink-3);padding:6px 12px}
+
+/* состояния */
+.stage{display:none;flex-direction:column;align-items:center}
+body[data-state="idle"] .stage,body[data-state="listening"] .stage,body[data-state="searching"] .stage,
+body[data-state="notfound"] .stage,body[data-state="error"] .stage{display:flex}
+body[data-state="result"] .result,body[data-state="sending"] .result,body[data-state="sent"] .result{display:flex}
+body:not([data-state="idle"]):not([data-state="notfound"]):not([data-state="error"]) .alt{visibility:hidden}
+
+/* подпись создателя */
+.credit{flex:0 0 auto;width:100%;max-width:380px;text-align:center;padding-top:clamp(6px,1.4dvh,12px);
+  border-top:1px solid rgba(255,255,255,.12);font-size:clamp(10px,1.55dvh,12px);line-height:1.38;color:var(--ink-2)}
+.credit .who{font-size:clamp(11.5px,1.8dvh,13.5px);color:var(--ink);font-weight:600;margin-bottom:2px}
+.credit .who a{color:var(--cyan);text-decoration:none;font-weight:800}
+.credit .tel{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:5px}
+.credit .tel a{padding:3px 11px;border-radius:99px;text-decoration:none;color:var(--ink);font-weight:700;
+  background:rgba(34,230,246,.1);box-shadow:0 0 0 1px rgba(34,230,246,.35) inset;white-space:nowrap}
+
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes ring{0%{transform:scale(1);opacity:.7}100%{transform:scale(1.55);opacity:0}}
+@keyframes fillp{to{stroke-dashoffset:0}}
+@keyframes think{0%,100%{transform:scale(1)}50%{transform:scale(1.04)}}
+@keyframes wave{0%,100%{opacity:1}50%{opacity:.62}}
+@keyframes rise{from{transform:translateY(24px) scale(.92);opacity:0}to{transform:none;opacity:1}}
+@keyframes draw{to{stroke-dashoffset:0}}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;animation-iteration-count:1!important}}
+@media (max-height:520px){.credit .biz{display:none}}
+</style>
+</head>
+<body data-state="idle">
+<div class="sky"></div><div class="tiles"></div><div class="cover-bg" id="coverBg"></div>
+
+<main>
+  <div class="fit" id="fit"><div class="fit-inner" id="inner">
+    <div class="stage">
+      <div class="copy">
+        <h1 id="h">Какая это песня?</h1>
+        <p class="sub" id="s">Включи музыку рядом и нажми «Слушать»</p>
+      </div>
+      <button class="orb" id="orb" type="button" aria-label="Слушать">
+        <span class="rings"><i></i><i></i><i></i></span>
+        <svg class="orb-svg" viewBox="-620 -620 1240 1240" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs>
+ <radialGradient id="gRim" cx="0" cy="0" r="500" gradientUnits="userSpaceOnUse">
+  <stop offset=".86" stop-color="#0087FD"></stop><stop offset=".94" stop-color="#005DF9"></stop>
+  <stop offset=".98" stop-color="#0032CD"></stop><stop offset="1" stop-color="#0414AB"></stop>
+ </radialGradient>
+ <linearGradient id="gIn" x1="-300" y1="-420" x2="260" y2="420" gradientUnits="userSpaceOnUse">
+  <stop offset="0" stop-color="#0A3FB8"></stop><stop offset=".28" stop-color="#02248E"></stop>
+  <stop offset=".6" stop-color="#011268"></stop><stop offset="1" stop-color="#010C4C"></stop>
+ </linearGradient>
+ <radialGradient id="gEdge" cx="0" cy="0" r="440" gradientUnits="userSpaceOnUse">
+  <stop offset=".62" stop-color="#0A66FF" stop-opacity="0"></stop><stop offset=".92" stop-color="#0A66FF" stop-opacity=".55"></stop>
+  <stop offset="1" stop-color="#1C86FF" stop-opacity=".85"></stop>
+ </radialGradient>
+ <linearGradient id="gGloss" x1="-330" y1="-400" x2="-60" y2="-40" gradientUnits="userSpaceOnUse">
+  <stop offset="0" stop-color="#DCE8FF" stop-opacity=".95"></stop><stop offset=".5" stop-color="#7FA8F5" stop-opacity=".42"></stop>
+  <stop offset="1" stop-color="#4C7DE8" stop-opacity="0"></stop>
+ </linearGradient>
+ <linearGradient id="gArc" x1="0" y1="-203" x2="0" y2="137" gradientUnits="userSpaceOnUse">
+  <stop offset="0" stop-color="#62F8FD"></stop><stop offset=".5" stop-color="#0FC2FF"></stop><stop offset="1" stop-color="#21F5FE"></stop>
+ </linearGradient>
+ <linearGradient id="gTri" x1="0" y1="-199" x2="0" y2="131" gradientUnits="userSpaceOnUse">
+  <stop offset="0" stop-color="#FFFFFF"></stop><stop offset="1" stop-color="#F3F8FF"></stop>
+ </linearGradient>
+ <clipPath id="cIn"><circle r="438"></circle></clipPath>
+ <filter id="fBlurL" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="30"></feGaussianBlur></filter>
+ <filter id="fBlurM" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="12"></feGaussianBlur></filter>
+ <filter id="fBlurS" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"></feGaussianBlur></filter>
+</defs>
+<circle class="o-glow" r="506" fill="#1D63FF" opacity=".55" filter="url(#fBlurL)"></circle>
+<circle r="500" fill="url(#gRim)"></circle>
+<g clip-path="url(#cIn)">
+ <circle r="440" fill="url(#gIn)"></circle>
+ <circle r="440" fill="url(#gEdge)"></circle>
+ <ellipse cx="0" cy="-20" rx="280" ry="240" fill="#0A5CFF" opacity=".10" filter="url(#fBlurL)"></ellipse>
+ <path d="M-392,60 A400,400 0 0 1 60,-395" fill="none" stroke="url(#gGloss)" stroke-width="70" stroke-linecap="round" filter="url(#fBlurS)"></path>
+</g>
+<circle r="452" fill="none" stroke="#00A9FF" stroke-width="64" opacity=".85" filter="url(#fBlurM)"></circle>
+<circle r="452" fill="none" stroke="#18E6FF" stroke-width="30"></circle>
+<circle r="452" fill="none" stroke="#8CFBFF" stroke-width="13"></circle>
+<circle class="o-prog" r="452" fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" transform="rotate(-90)" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100"></circle>
+<g class="o-sym">
+ <g class="o-halo" filter="url(#fBlurM)" opacity=".6">
+  <polygon points="-86.0,-139.1 -86.0,71.1 89.7,-34.0" fill="#0E9BFF" stroke="#0E9BFF" stroke-width="86" stroke-linejoin="round"></polygon>
+  <path d="M-260.1,-181 A231.4,231.4 0 0 0 -265.8,115 M-203.1,-118 A159.3,159.3 0 0 0 -204.1,60 M265.2,-181 A235.5,235.5 0 0 1 269.3,115 M206.6,-118 A158.3,158.3 0 0 1 207.6,60" fill="none" stroke="#0FD2FF" stroke-width="56" stroke-linecap="round"></path>
+ </g>
+ <g class="o-arcs" fill="none" stroke-linecap="round">
+  <path class="a1 L" d="M-203.1,-118 A159.3,159.3 0 0 0 -204.1,60" stroke="url(#gArc)" stroke-width="41"></path>
+  <path class="a2 L" d="M-260.1,-181 A231.4,231.4 0 0 0 -265.8,115" stroke="url(#gArc)" stroke-width="44"></path>
+  <path class="a1 R" d="M206.6,-118 A158.3,158.3 0 0 1 207.6,60" stroke="url(#gArc)" stroke-width="41"></path>
+  <path class="a2 R" d="M265.2,-181 A235.5,235.5 0 0 1 269.3,115" stroke="url(#gArc)" stroke-width="44"></path>
+ </g>
+ <g class="o-tri">
+  <polygon points="-86.0,-139.1 -86.0,71.1 89.7,-34.0" fill="url(#gTri)" stroke="url(#gTri)" stroke-width="68" stroke-linejoin="round"></polygon>
+ </g>
+</g>
+<text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-count" x="0" y="40" text-anchor="middle" font-size="300" font-weight="800" fill="#fff" opacity="0">0</text>
+<g class="o-labelwrap">
+ <text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-label-glow" x="2" y="266" text-anchor="middle" font-size="98" font-weight="800" fill="#7FE9FF" opacity=".55" filter="url(#fBlurS)" textLength="476" lengthAdjust="spacingAndGlyphs">СЛУШАТЬ</text>
+ <text font-family="Montserrat, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'DejaVu Sans', sans-serif" class="o-label" x="2" y="266" text-anchor="middle" font-size="98" font-weight="800" fill="#fff" textLength="476" lengthAdjust="spacingAndGlyphs">СЛУШАТЬ</text>
+</g>
+</svg>
+      </button>
+      <button class="alt" id="alt" type="button">Загрузить файл</button>
+      <input type="file" id="file" accept="audio/*,video/*" hidden="">
+    </div>
+
+    <div class="result" id="result">
+      <div class="cover"><div class="ph">🎵</div><img id="cover" alt="" hidden=""></div>
+      <div class="meta">
+        <h2 id="title"></h2>
+        <p class="artist" id="artist"></p>
+        <div class="chips" id="chips"></div>
+      </div>
+      <div class="actions">
+        <button class="btn primary" id="dl" type="button"></button>
+        <button class="btn ghost" id="again" type="button"></button>
+      </div>
+    </div>
+  </div></div>
+
+  <footer class="credit">
+    <p class="who"><span id="cWho">Создатель бота:</span> <a id="tgLink" href="https://t.me/IDIEVW">@IDIEVW</a></p>
+    <p class="biz" id="cBiz">Хотите создать сайт, умных чат-ботов или приложение iOS/Android для своего бизнеса? Напишите в чат или звоните:</p>
+    <p class="tel"><a href="tel:+992978117811">+992 978117811</a><a href="tel:+992944442044">+992 944442044</a></p>
+  </footer>
+</main>
+
+<script>
+(() => {
+  const tg = window.Telegram && window.Telegram.WebApp;
+  try { tg && tg.ready(); tg && tg.expand(); tg && tg.setHeaderColor('#030B2E'); tg && tg.setBackgroundColor('#030B2E'); } catch (e) {}
+  const q = new URLSearchParams(location.search);
+  const lc = ((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code) || 'ru').slice(0, 2);
+  const lang = q.get('lang') === 'tg' || (!q.get('lang') && lc === 'tg') ? 'tg' : 'ru';
+
+  const T = {
+    ru: {
+      title: 'Какая это песня?', sub: 'Включи музыку рядом и нажми «Слушать»', listen: 'Слушать', listenLbl: 'Слушаю', searchLbl: 'Ищу…', retryLbl: 'Ещё раз',
+      listening: 'Слушаю…', listeningSub: 'Поднеси телефон ближе к звуку',
+      searching: 'Ищу песню…', searchingSub: 'Это займёт несколько секунд',
+      download: 'Скачать музыку', again: 'Искать ещё',
+      sending: 'Скачиваю и отправляю…', sent: 'Песня отправлена в чат', back: 'Вернуться в чат',
+      nfTitle: 'Песня не найдена', nfSub: 'Подойди ближе к источнику звука или сделай музыку погромче.',
+      micTitle: 'Нет доступа к микрофону', micSub: 'Разреши микрофон для Telegram в настройках телефона или загрузи файл.',
+      file: 'Загрузить файл', subscribe: 'Сначала подпишись на каналы в боте', failTitle: 'Не получилось',
+      fail: 'Попробуй ещё раз через минуту.', auth: 'Открой это окно из бота', busy: 'Подожди, предыдущий поиск ещё идёт.',
+      expired: 'Результат устарел — найди песню ещё раз.', big: 'Файл слишком большой. Выбери фрагмент короче.',
+      who: 'Создатель бота:', biz: 'Хотите создать сайт, умных чат-ботов или приложение iOS/Android для своего бизнеса? Напишите в чат или звоните:'
+    },
+    tg: {
+      title: 'Ин кадом суруд аст?', sub: 'Мусиқиро дар наздикӣ даргиред ва «Гӯш кардан»-ро пахш кунед', listen: 'Гӯш кардан', listenLbl: 'Гӯш мекунам', searchLbl: 'Меҷӯям…', retryLbl: 'Бори дигар',
+      listening: 'Гӯш карда истодаам…', listeningSub: 'Телефонро ба манбаи садо наздик кунед',
+      searching: 'Суруд ҷустуҷӯ мешавад…', searchingSub: 'Якчанд сония лозим аст',
+      download: 'Мусиқиро боргирӣ кардан', again: 'Боз ҷустуҷӯ',
+      sending: 'Боргирӣ ва фиристодан…', sent: 'Суруд ба чат фиристода шуд', back: 'Ба чат баргаштан',
+      nfTitle: 'Суруд ёфт нашуд', nfSub: 'Ба манбаи садо наздиктар шавед ё садоро баландтар кунед.',
+      micTitle: 'Дастрасӣ ба микрофон нест', micSub: 'Дар танзимоти телефон ба Telegram иҷозати микрофонро диҳед ё файл бор кунед.',
+      file: 'Бор кардани файл', subscribe: 'Аввал дар бот ба каналҳо обуна шавед', failTitle: 'Муваффақ нашуд',
+      fail: 'Баъди як дақиқа бори дигар кӯшиш кунед.', auth: 'Ин равзанаро аз бот кушоед', busy: 'Интизор шавед, ҷустуҷӯи қаблӣ идома дорад.',
+      expired: 'Натиҷа кӯҳна шуд — суруди худро дубора ёбед.', big: 'Файл хеле калон аст. Порчаи кӯтоҳтар интихоб кунед.',
+      who: 'Созандаи бот:', biz: 'Мехоҳед сайт, чат-ботҳои оқилона ё барномаи iOS/Android барои бизнеси худ созед? Ба чат нависед ё занг занед:'
+    }
+  }[lang];
+  document.documentElement.lang = lang;
+
+  const $ = id => document.getElementById(id);
+  const body = document.body, orb = $('orb'), inner = $('inner'), fitBox = $('fit');
+  const LISTEN_MS = 11000;
+  let state = 'idle', stream = null, rec = null, ctx = null, raf = 0, tick = 0, token = null, canceled = false;
+
+  const haptic = (t, k) => { try { tg && tg.HapticFeedback && (t === 'n' ? tg.HapticFeedback.notificationOccurred(k) : tg.HapticFeedback.impactOccurred(k)); } catch (e) {} };
+
+  /* ---------- подгонка под любой экран: без прокрутки ---------- */
+  function fit() {
+    inner.style.transform = '';
+    const k = Math.min(1, fitBox.clientHeight / inner.offsetHeight, fitBox.clientWidth / inner.offsetWidth);
+    inner.style.transform = k < 1 ? 'scale(' + Math.max(0.5, k).toFixed(3) + ')' : '';
+  }
+  let fitQueued = false;
+  const queueFit = () => { if (fitQueued) return; fitQueued = true; requestAnimationFrame(() => { fitQueued = false; fit(); }); };
+  window.addEventListener('resize', queueFit);
+  try { new ResizeObserver(queueFit).observe(fitBox); } catch (e) {}
+  try { tg && tg.onEvent && tg.onEvent('viewportChanged', queueFit); } catch (e) {}
+
+  /* подпись на кнопке (текст в SVG подгоняем по ширине) */
+  function setLabel(text) {
+    const s = String(text).toUpperCase(), n = [...s].length;
+    let fs = 98, tl = n * 68;
+    if (tl > 560) { fs = Math.round(98 * 560 / tl); tl = 560; }
+    document.querySelectorAll('.o-label,.o-label-glow').forEach(el => {
+      el.textContent = s; el.setAttribute('font-size', fs); el.setAttribute('textLength', n > 1 ? tl : '');
+    });
+  }
+  function set(s, h, sub) {
+    state = s; body.dataset.state = s;
+    if (h !== undefined) $('h').textContent = h;
+    if (sub !== undefined) $('s').textContent = sub;
+    queueFit();
+  }
+  function idle() {
+    set('idle', T.title, T.sub); setLabel(T.listen); $('alt').textContent = T.file;
+    $('coverBg').style.backgroundImage = ''; $('again').onclick = null;
+    document.documentElement.style.setProperty('--lvl', 0);
+  }
+  $('cWho').textContent = T.who; $('cBiz').textContent = T.biz;
+  $('tgLink').addEventListener('click', e => { try { if (tg && tg.openTelegramLink) { e.preventDefault(); tg.openTelegramLink('https://t.me/IDIEVW'); } } catch (x) {} });
+
+  /* ---------- запись ---------- */
+  function pickMime() {
+    if (!window.MediaRecorder) return '';
+    for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/aac']) {
+      try { if (MediaRecorder.isTypeSupported(m)) return m; } catch (e) {}
+    }
+    return '';
+  }
+  function stopMeter() {
+    cancelAnimationFrame(raf); clearInterval(tick);
+    document.documentElement.style.setProperty('--lvl', 0);
+    try { stream && stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    try { ctx && ctx.close(); } catch (e) {}
+    stream = ctx = null;
+  }
+  async function listen() {
+    if (state !== 'idle' && state !== 'notfound' && state !== 'error') return;
+    if (!tg || !tg.initData) { return showError(T.failTitle, T.auth); }
+    haptic('i', 'medium');
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: true } });
+    } catch (e) { return showError(T.micTitle, T.micSub); }
+    canceled = false;
+    const chunks = [], mime = pickMime();
+    try { rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (e) { stopMeter(); return showError(T.micTitle, T.micSub); }
+    rec.ondataavailable = ev => ev.data && ev.data.size && chunks.push(ev.data);
+    rec.onstop = () => {
+      stopMeter();
+      if (canceled) return;
+      upload(new Blob(chunks, { type: rec.mimeType || mime || 'audio/webm' }), 'rec');
+    };
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      ctx = new AC(); const an = ctx.createAnalyser(); an.fftSize = 512;
+      ctx.createMediaStreamSource(stream).connect(an);
+      const buf = new Uint8Array(an.fftSize); let sm = 0;
+      const loop = () => {
+        an.getByteTimeDomainData(buf); let s = 0;
+        for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; s += v * v; }
+        sm += (Math.min(1, Math.sqrt(s / buf.length) * 4.5) - sm) * 0.35;
+        document.documentElement.style.setProperty('--lvl', sm.toFixed(3));
+        raf = requestAnimationFrame(loop);
+      };
+      loop();
+    } catch (e) {}
+    body.style.setProperty('--dur', LISTEN_MS + 'ms');
+    set('listening', T.listening, T.listeningSub); setLabel(T.listenLbl);
+    let left = Math.round(LISTEN_MS / 1000); document.querySelector('.o-count').textContent = left;
+    tick = setInterval(() => { left = Math.max(0, left - 1); document.querySelector('.o-count').textContent = left; }, 1000);
+    rec.start();
+    setTimeout(() => { if (rec && rec.state === 'recording') rec.stop(); }, LISTEN_MS);
+  }
+
+  /* ---------- сервер ---------- */
+  function showError(title, sub) { stopMeter(); set('error', title, sub); setLabel(T.retryLbl); haptic('n', 'error'); }
+  function notFound() { set('notfound', T.nfTitle, T.nfSub); setLabel(T.retryLbl); haptic('n', 'warning'); }
+
+  async function upload(blob, name) {
+    set('searching', T.searching, T.searchingSub); setLabel(T.searchLbl);
+    const fd = new FormData(); fd.append('audio', blob, name);
+    let r;
+    try {
+      const res = await fetch('/api/recognize', { method: 'POST', headers: { 'X-Init-Data': tg.initData }, body: fd });
+      r = await res.json();
+    } catch (e) { return showError(T.failTitle, T.fail); }
+    if (!r.ok) {
+      const map = { subscribe: T.subscribe, auth: T.auth, busy: T.busy, big: T.big };
+      return showError(T.failTitle, map[r.error] || T.fail);
+    }
+    if (!r.found) return notFound();
+    token = r.token; showResult(r);
+  }
+
+  function showResult(r) {
+    $('title').textContent = r.title; $('artist').textContent = r.artist || '';
+    const chips = $('chips'); chips.textContent = '';
+    [r.album, r.genre].filter(Boolean).forEach(x => { const s = document.createElement('span'); s.textContent = x; chips.appendChild(s); });
+    const img = $('cover');
+    if (r.cover) {
+      img.onload = () => { img.hidden = false; };
+      img.src = r.cover; $('coverBg').style.backgroundImage = 'url("' + r.cover.replace(/"/g, '') + '")';
+    } else { img.hidden = true; }
+    resetButtons(); set('result'); haptic('n', 'success');
+  }
+  const DL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>';
+  function resetButtons() {
+    const dl = $('dl'); dl.disabled = false; dl.className = 'btn primary'; dl.innerHTML = DL_ICON + '<span>' + T.download + '</span>';
+    $('again').textContent = T.again; $('again').style.display = ''; $('again').onclick = null;
+  }
+  async function download() {
+    if (state !== 'result' || !token) return;
+    haptic('i', 'medium'); set('sending');
+    const dl = $('dl'); dl.disabled = true; dl.innerHTML = '<div class="spin"></div><span>' + T.sending + '</span>'; $('again').style.display = 'none';
+    let r;
+    try {
+      const res = await fetch('/api/download', { method: 'POST', headers: { 'X-Init-Data': tg.initData, 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+      r = await res.json();
+    } catch (e) { r = { ok: false }; }
+    if (!r.ok) {
+      set('result'); resetButtons();
+      const map = { expired: T.expired, busy: T.busy, big: T.big, subscribe: T.subscribe };
+      dl.querySelector('span').textContent = map[r.error] || T.fail;
+      setTimeout(() => { if (state === 'result') resetButtons(); }, 3200);
+      return haptic('n', 'error');
+    }
+    set('sent'); haptic('n', 'success');
+    dl.disabled = false; dl.className = 'btn primary';
+    dl.innerHTML = '<svg class="sent-mark" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span>' + T.sent + '</span>';
+    $('again').style.display = ''; $('again').textContent = T.back;
+    $('again').onclick = () => { try { tg.close(); } catch (e) {} };
+  }
+
+  /* ---------- события ---------- */
+  orb.addEventListener('click', () => { if (state !== 'listening') listen(); });
+  $('alt').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    if (f.size > 20 * 1024 * 1024) return showError(T.failTitle, T.big);
+    if (!tg || !tg.initData) return showError(T.failTitle, T.auth);
+    upload(f, f.name || 'file');
+  });
+  $('dl').addEventListener('click', download);
+  $('again').addEventListener('click', () => { if (state === 'result') idle(); });
+  window.addEventListener('pagehide', () => { canceled = true; stopMeter(); });
+
+  idle(); fit();
+})();
+</script>
+
+
+</body></html>
