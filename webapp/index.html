@@ -603,11 +603,23 @@ body[data-state="result"] .langb,body[data-state="sending"] .langb,body[data-sta
         return ((await res.json()).results || []).filter(x => x.previewUrl);
       } catch (e) { return []; }
     };
-    const t = String(r.title || '').toLowerCase(), a = String(r.artist || '').toLowerCase().split(/[,&]/)[0].trim();
+    const jsonp = url => new Promise(res => {
+      const cb = 'dz' + Math.random().toString(36).slice(2), sc = document.createElement('script');
+      const done = v => { clearTimeout(to); delete window[cb]; sc.remove(); res(v); };
+      const to = setTimeout(() => done(null), 8000);
+      window[cb] = d => done(d); sc.onerror = () => done(null);
+      sc.src = url + '&output=jsonp&callback=' + cb; document.head.appendChild(sc);
+    });
+    const dz = async term => {
+      const d = await jsonp('https://api.deezer.com/search?limit=10&q=' + encodeURIComponent(term));
+      return ((d && d.data) || []).filter(x => x.preview).map(x => ({ previewUrl: x.preview, trackName: x.title, artistName: x.artist && x.artist.name }));
+    };
+    const clean = x => String(x || '').split(/\s[-–—]\s|\(|\[/)[0].trim();
+    const ttl = clean(r.title), t = ttl.toLowerCase(), a = String(r.artist || '').toLowerCase().split(/[,&]/)[0].trim();
     const has = (x, f, v) => String(x[f] || '').toLowerCase().includes(v);
     const pick = (list, loose) => list.find(x => has(x, 'trackName', t) && a && has(x, 'artistName', a)) || list.find(x => has(x, 'trackName', t)) || (loose ? list[0] : null);
-    let best = pick(await get([r.artist, r.title].filter(Boolean).join(' ')), true);
-    if (!best) best = pick(await get(r.title || ''), false);
+    const full = [r.artist, ttl].filter(Boolean).join(' ');
+    let best = pick(await get(full), true) || pick(await dz(full), true) || pick(await get(ttl), false) || pick(await dz(ttl), false);
     return best ? best.previewUrl : '';
   }
   const failPlay = () => { renderPlay(T.noPrev); haptic('n', 'warning'); clearTimeout(playMsgTimer); playMsgTimer = setTimeout(() => renderPlay(), 2600); };
