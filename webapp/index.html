@@ -559,7 +559,7 @@ body[data-state="result"] .langb,body[data-state="sending"] .langb,body[data-sta
       img.onload = () => { img.hidden = false; };
       img.src = r.cover; $('coverBg').style.backgroundImage = 'url("' + r.cover.replace(/"/g, '') + '")';
     } else { img.hidden = true; }
-    stopAudio(); resetButtons(); renderHeart(); renderLinks(); set('result'); haptic('n', 'success');
+    stopAudio(); resetButtons(); renderHeart(); renderLinks(); getPrev(cur); set('result'); haptic('n', 'success');
   }
   const DL_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 20h14"/></svg>';
   function resetButtons() {
@@ -586,34 +586,45 @@ body[data-state="result"] .langb,body[data-state="sending"] .langb,body[data-sta
     audioFor = null; loadingPrev = false; clearTimeout(playMsgTimer); $('seekBox').hidden = true;
     $('play').style.setProperty('--p', 0); renderPlay();
   }
+  const pcache = new Map(), SIL = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=';
+  function getPrev(r) {
+    const k = key(r);
+    if (!pcache.has(k)) pcache.set(k, resolvePreview(r).then(u => { if (!u) pcache.delete(k); return u; }));
+    return pcache.get(k);
+  }
   async function resolvePreview(r) {
     const direct = r.preview || r.preview_url || r.previewUrl || r.audio || r.audio_url;
     if (direct) return direct;
-    try {
-      const term = encodeURIComponent([r.artist, r.title].filter(Boolean).join(' '));
-      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 8000);
-      const res = await fetch('https://itunes.apple.com/search?media=music&entity=song&limit=5&term=' + term, { signal: ctl.signal });
-      clearTimeout(to);
-      const j = await res.json(), list = (j.results || []).filter(x => x.previewUrl);
-      const t = String(r.title || '').toLowerCase();
-      const best = list.find(x => String(x.trackName || '').toLowerCase().includes(t)) || list[0];
-      return best ? best.previewUrl : '';
-    } catch (e) { return ''; }
+    const get = async term => {
+      try {
+        const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), 8000);
+        const res = await fetch('https://itunes.apple.com/search?media=music&entity=song&limit=10&term=' + encodeURIComponent(term), { signal: ctl.signal });
+        clearTimeout(to);
+        return ((await res.json()).results || []).filter(x => x.previewUrl);
+      } catch (e) { return []; }
+    };
+    const t = String(r.title || '').toLowerCase(), a = String(r.artist || '').toLowerCase().split(/[,&]/)[0].trim();
+    const has = (x, f, v) => String(x[f] || '').toLowerCase().includes(v);
+    const pick = (list, loose) => list.find(x => has(x, 'trackName', t) && a && has(x, 'artistName', a)) || list.find(x => has(x, 'trackName', t)) || (loose ? list[0] : null);
+    let best = pick(await get([r.artist, r.title].filter(Boolean).join(' ')), true);
+    if (!best) best = pick(await get(r.title || ''), false);
+    return best ? best.previewUrl : '';
   }
+  const failPlay = () => { renderPlay(T.noPrev); haptic('n', 'warning'); clearTimeout(playMsgTimer); playMsgTimer = setTimeout(() => renderPlay(), 2600); };
   async function togglePlay() {
     if (!cur || loadingPrev) return;
     haptic('i', 'light');
     if (!audio.paused) { audio.pause(); return; }
-    if (audioFor !== token) {
-      loadingPrev = true; renderPlay();
-      const url = await resolvePreview(cur);
-      loadingPrev = false;
-      if (!url) { renderPlay(T.noPrev); haptic('n', 'warning'); playMsgTimer = setTimeout(() => renderPlay(), 2600); return; }
-      audio.src = url; audioFor = token;
-    }
-    try { await audio.play(); } catch (e) { renderPlay(T.noPrev); playMsgTimer = setTimeout(() => renderPlay(), 2600); }
+    if (audioFor === token) { try { await audio.play(); } catch (e) { failPlay(); } return; }
+    audio.src = SIL; audio.play().catch(() => {});   /* «разблокировка» звука прямо в момент нажатия */
+    loadingPrev = true; renderPlay();
+    const url = await getPrev(cur);
+    loadingPrev = false;
+    if (!url) { audio.pause(); renderPlay(); return failPlay(); }
+    audio.src = url; audioFor = token;
+    try { await audio.play(); } catch (e) { audioFor = null; failPlay(); }
   }
-  ['play', 'pause', 'ended'].forEach(ev => audio.addEventListener(ev, () => renderPlay()));
+    ['play', 'pause', 'ended'].forEach(ev => audio.addEventListener(ev, () => renderPlay()));
   audio.addEventListener('ended', () => $('play').style.setProperty('--p', 0));
   audio.addEventListener('timeupdate', () => {
     if (audio.duration) $('play').style.setProperty('--p', (audio.currentTime / audio.duration).toFixed(3));
