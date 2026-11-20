@@ -1,2 +1,4 @@
 aiogram>=3.13
+aiohttp
 yt-dlp[default]
+shazamio
