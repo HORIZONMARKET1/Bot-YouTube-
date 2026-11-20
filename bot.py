@@ -102,7 +102,7 @@ CHANNEL = "@horizonmarkettj"  # канал для обязательной по�
 CHANNEL_URL = "https://t.me/horizonmarkettj"
 CREATOR_URL = "https://t.me/IDIEVW"
 SHOP_URL = "https://korvontj.shop"  # ссылка для кнопки «Посмотреть» (магазин)
-BOT_VERSION = "2026-11-16 gallery-fix+convert"
+BOT_VERSION = "2026-11-20 two-bots+instagram v2"
 BOT_NAME = "Taj Saver"  # так будет называться любая присланная музыка
 HERE = Path(__file__).resolve().parent
 COVER = HERE / "cover.jpg"  # обложка внутри mp3 (640x640)
@@ -1552,7 +1552,7 @@ async def api_download(request: web.Request):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-async def start_web_server(bot: Bot):
+async def start_web_server(bot: Bot, bot2: "Bot | None" = None):
     """Сайт Mini App: отдаёт страницу и принимает запись с микрофона. Порт даёт bothost (PORT)."""
     try:
         app = web.Application(client_max_size=24 * 1024 * 1024)
@@ -1561,6 +1561,8 @@ async def start_web_server(bot: Bot):
         app.router.add_get("/health", lambda r: web.Response(text="ok"))
         app.router.add_post("/api/recognize", api_recognize)
         app.router.add_post("/api/download", api_download)
+        if bot2 is not None:
+            ig_register_routes(app)  # вебхук Instagram, вход через Instagram, клики, картинки
         runner = web.AppRunner(app)
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", "8080"))).start()
@@ -2213,6 +2215,1856 @@ async def other(message: Message):
     await message.answer(t(message.from_user.id, "other"))
 
 
+# =====================================================================================
+#  БОТ №2 — Instagram-автоматизация (как ManyChat)
+#  Работает в этом же файле. Включается, если задана переменная BOT2_TOKEN.
+#  • комментарий под постом → ответ в комментарии + личное сообщение с кнопками
+#  • автоответчик в Direct (приветствие, ключевые слова, ответ по умолчанию)
+#  • «сначала подпишись» (проверка подписки) • клики по ссылкам • статистика
+#  • динамика подписчиков за 30 дней, кто подписался / отписался среди контактов
+# =====================================================================================
+import random  # noqa: E402
+
+TOKEN2 = os.getenv("BOT2_TOKEN")
+IG_APP_ID = (os.getenv("IG_APP_ID") or "").strip()
+IG_APP_SECRET = (os.getenv("IG_APP_SECRET") or "").strip()
+IG_VERIFY = os.getenv("IG_VERIFY_TOKEN") or hashlib.sha256(("ig" + (TOKEN2 or "")).encode()).hexdigest()[:16]
+IG_API = "https://graph.instagram.com/v21.0"
+IG_SCOPES = "instagram_business_basic,instagram_business_manage_messages,instagram_business_manage_comments"
+IG_AUTO_COOLDOWN = 12 * 3600  # ответ по умолчанию — не чаще раза в 12 часов на человека
+
+# ---------- тарифы и оплата ----------
+FIREBASE_URL = (os.getenv("FIREBASE_DB_URL") or "").strip().rstrip("/")  # https://проект-default-rtdb.firebaseio.com
+FIREBASE_AUTH = (os.getenv("FIREBASE_AUTH") or "").strip()  # «секрет базы данных» (необязательно, но так безопаснее)
+SUPPORT_USER = "@IDIEVW"
+SUPPORT_URL = "https://t.me/IDIEVW"
+PAY_DC = os.getenv("PAY_DC", "978117811")  # DC City
+PAY_ALIF = os.getenv("PAY_ALIF", "978117811")  # Alif Mobi
+FREE_DAYS = 3  # Free: сколько дней работает ответ под одним постом
+PRO_MAX_ACCOUNTS = 5  # Business Pro: сколько Instagram-аккаунтов можно подключить
+PRO_INTRO_ON = os.getenv("PRO_INTRO", "1") == "1"  # акция для первых пользователей (PRO_INTRO=0 — выключить)
+PLANS = {
+    "intro": {"title": "Business Pro", "days": 5, "label": "5 дней", "price": int(os.getenv("PRICE_INTRO", "15"))},
+    "month": {"title": "Business Pro", "days": 30, "label": "1 месяц", "price": int(os.getenv("PRICE_MONTH", "30"))},
+}
+
+dp2 = Dispatcher()
+BOT2: "Bot | None" = None
+ig_wait: dict[int, dict] = {}  # что бот ждёт от человека (токен, ключевое слово, текст…)
+
+db.executescript(
+    """
+CREATE TABLE IF NOT EXISTS ig_accounts(
+    ig_id TEXT PRIMARY KEY, alt_id TEXT, owner INTEGER, username TEXT, token TEXT, token_at INTEGER,
+    welcome TEXT, welcome_on INTEGER DEFAULT 0, dflt TEXT, dflt_on INTEGER DEFAULT 0, created INTEGER
+);
+CREATE TABLE IF NOT EXISTS ig_rules(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ig_id TEXT, kind TEXT, keyword TEXT, media_id TEXT DEFAULT '',
+    message TEXT, buttons TEXT DEFAULT '[]', public_reply TEXT DEFAULT '', need_follow INTEGER DEFAULT 0,
+    active INTEGER DEFAULT 1, sent INTEGER DEFAULT 0, created INTEGER, catalog INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS ig_contacts(
+    ig_id TEXT, user_id TEXT, username TEXT, first_seen INTEGER, last_seen INTEGER,
+    last_auto INTEGER DEFAULT 0, follows INTEGER DEFAULT -1, follow_checked INTEGER DEFAULT 0,
+    PRIMARY KEY(ig_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS ig_events(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ig_id TEXT, user_id TEXT, username TEXT, kind TEXT, ts INTEGER
+);
+CREATE TABLE IF NOT EXISTS ig_followers(ig_id TEXT, day TEXT, cnt INTEGER, PRIMARY KEY(ig_id, day));
+CREATE TABLE IF NOT EXISTS ig_links(
+    id TEXT PRIMARY KEY, url TEXT, ig_id TEXT, rule_id INTEGER, clicks INTEGER DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS ig_products(
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ig_id TEXT, title TEXT, subtitle TEXT, img TEXT DEFAULT '',
+    url TEXT, btn TEXT DEFAULT 'Купить', link_id TEXT, created INTEGER
+);
+CREATE TABLE IF NOT EXISTS ig_done(key TEXT PRIMARY KEY, ts INTEGER);
+CREATE TABLE IF NOT EXISTS ig_log(ig_id TEXT, ts INTEGER, kind TEXT);
+CREATE TABLE IF NOT EXISTS ig_sel(owner INTEGER PRIMARY KEY, ig_id TEXT);
+CREATE TABLE IF NOT EXISTS kv(path TEXT PRIMARY KEY, val TEXT);
+"""
+)
+db.commit()
+try:  # на случай, если таблица создана старой версией
+    db.execute("ALTER TABLE ig_rules ADD COLUMN catalog INTEGER DEFAULT 0")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+IG_IMG_DIR = DATA_DIR / "ig_img"  # фото товаров (отдаются по /img/…)
+
+
+# ---------- хранилище клиентов: Firebase (запасной вариант — локальная база) ----------
+class PlanLimit(Exception):
+    """Действие недоступно на текущем тарифе."""
+
+
+def bg(coro) -> None:
+    task = asyncio.create_task(coro)
+    bg_tasks.add(task)
+    task.add_done_callback(bg_tasks.discard)
+
+
+def _kv_get(path: str):
+    row = db.execute("SELECT val FROM kv WHERE path=?", (path,)).fetchone()
+    try:
+        return json.loads(row[0]) if row else None
+    except ValueError:
+        return None
+
+
+def _kv_set(path: str, value) -> None:
+    db.execute("INSERT OR REPLACE INTO kv(path, val) VALUES(?,?)", (path, json.dumps(value, ensure_ascii=False)))
+    db.commit()
+
+
+def _fb_sync(method: str, path: str, body=None):
+    """Запрос к Firebase Realtime Database через REST."""
+    url = f"{FIREBASE_URL}/{path}.json"
+    if FIREBASE_AUTH:
+        url += "?auth=" + urllib.parse.quote(FIREBASE_AUTH, safe="")
+    data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Firebase HTTP {e.code}: {e.read(200).decode('utf-8', 'ignore')}")
+    return json.loads(raw.decode("utf-8") or "null")
+
+
+async def fb_alarm(err: str):
+    if BOT2:
+        await notify_admins(BOT2, "⚠️ Firebase недоступен, данные пока пишутся локально:\n" + err[:200],
+                            key="fb", every=3600)
+
+
+async def store_get(path: str):
+    if FIREBASE_URL:
+        try:
+            return await asyncio.to_thread(_fb_sync, "GET", path)
+        except Exception as e:
+            logging.warning("Firebase GET %s: %s", path, e)
+            await fb_alarm(str(e))
+    return _kv_get(path)
+
+
+async def store_set(path: str, value) -> None:
+    _kv_set(path, value)  # локальная копия на случай сбоя Firebase
+    if FIREBASE_URL:
+        try:
+            await asyncio.to_thread(_fb_sync, "PUT", path, value)
+        except Exception as e:
+            logging.warning("Firebase PUT %s: %s", path, e)
+            await fb_alarm(str(e))
+
+
+async def store_update(path: str, fields: dict) -> None:
+    cur = _kv_get(path)
+    cur = dict(cur) if isinstance(cur, dict) else {}
+    cur.update(fields)
+    _kv_set(path, cur)
+    if FIREBASE_URL:
+        try:
+            await asyncio.to_thread(_fb_sync, "PATCH", path, fields)
+        except Exception as e:
+            logging.warning("Firebase PATCH %s: %s", path, e)
+            await fb_alarm(str(e))
+
+
+async def store_all(path: str) -> dict:
+    if FIREBASE_URL:
+        try:
+            return await asyncio.to_thread(_fb_sync, "GET", path) or {}
+        except Exception as e:
+            logging.warning("Firebase GET %s: %s", path, e)
+    out = {}
+    for r in db.execute("SELECT path, val FROM kv WHERE path LIKE ?", (path + "/%",)).fetchall():
+        try:
+            out[r["path"].split("/", 1)[1]] = json.loads(r["val"])
+        except ValueError:
+            pass
+    return out
+
+
+SUB_TTL = 30
+sub_cache: dict[int, tuple[float, dict]] = {}
+
+
+async def get_sub(uid: int, fresh: bool = False) -> dict:
+    """Подписка пользователя: {plan, until, free_started, intro_used, pending…}. Кэш 30 секунд."""
+    hit = sub_cache.get(uid)
+    if hit and not fresh and time.time() - hit[0] < SUB_TTL:
+        return hit[1]
+    data = await store_get(f"subs/{uid}")
+    if not isinstance(data, dict):
+        data = {}
+    sub_cache[uid] = (time.time(), data)
+    return data
+
+
+def sub_cached(uid: int) -> dict:
+    hit = sub_cache.get(uid)
+    return hit[1] if hit else {}
+
+
+async def sub_update(uid: int, **fields) -> dict:
+    await store_update(f"subs/{uid}", fields)
+    return await get_sub(uid, fresh=True)
+
+
+async def client_update(uid: int, **fields) -> None:
+    fields["updated"] = int(time.time())
+    if not _kv_get(f"clients/{uid}"):
+        fields["joined"] = fields["updated"]
+    await store_update(f"clients/{uid}", fields)
+
+
+async def client_touch(user) -> None:
+    await client_update(user.id, name=user.full_name, username=user.username or "")
+
+
+def tier_of(sub: dict) -> str:
+    """pro — Business Pro оплачен; free — бесплатный; expired — бесплатные 3 дня закончились."""
+    now = time.time()
+    if sub.get("plan") == "pro" and (sub.get("until") or 0) > now:
+        return "pro"
+    fs = sub.get("free_started")
+    if fs and now > fs + FREE_DAYS * 86400:
+        return "expired"
+    return "free"
+
+
+async def acc_tier(acc) -> str:
+    return tier_of(await get_sub(acc["owner"]))
+
+
+def intro_available(sub: dict) -> bool:
+    return PRO_INTRO_ON and not sub.get("intro_used")
+
+
+def fdate(ts) -> str:
+    return time.strftime("%d.%m.%Y", time.gmtime(int(ts) + TZ_OFFSET))
+
+
+MSG_FREE_ENDED = ("⏸ Бесплатный период (3 дня) закончился — ответы в комментариях остановлены.\n"
+                  "Подключите Business Pro: /tariff")
+
+
+def plan_line(sub: dict) -> str:
+    t = tier_of(sub)
+    if t == "pro":
+        return f"💎 Тариф: Business Pro до {fdate(sub['until'])}"
+    if t == "expired":
+        return f"⏸ Тариф Free закончился ({FREE_DAYS} дня). Подключите Business Pro: /tariff"
+    fs = sub.get("free_started")
+    if fs:
+        return f"🆓 Тариф: Free — работает до {fdate(fs + FREE_DAYS * 86400)}"
+    return f"🆓 Тариф: Free (1 аккаунт, ответ в комментариях, 1 пост, {FREE_DAYS} дня). Больше: /tariff"
+
+
+# ---------- мелкие помощники ----------
+def dbx(sql: str, args=()):
+    cur = db.execute(sql, args)
+    db.commit()
+    return cur
+
+
+def ig_today(offset_days: int = 0) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() + TZ_OFFSET - offset_days * 86400))
+
+
+def ig_acc(any_id) -> "sqlite3.Row | None":
+    return db.execute(
+        "SELECT * FROM ig_accounts WHERE ig_id=? OR alt_id=?", (str(any_id), str(any_id))
+    ).fetchone()
+
+
+def ig_accs_of(owner: int) -> list:
+    return db.execute("SELECT * FROM ig_accounts WHERE owner=? ORDER BY created", (owner,)).fetchall()
+
+
+def ig_acc_of(owner: int):
+    """Выбранный аккаунт владельца (если не выбран — последний подключённый)."""
+    sel = db.execute("SELECT ig_id FROM ig_sel WHERE owner=?", (owner,)).fetchone()
+    if sel:
+        row = db.execute("SELECT * FROM ig_accounts WHERE ig_id=? AND owner=?", (sel[0], owner)).fetchone()
+        if row:
+            return row
+    return db.execute(
+        "SELECT * FROM ig_accounts WHERE owner=? ORDER BY created DESC LIMIT 1", (owner,)
+    ).fetchone()
+
+
+def ig_seen(key: str) -> bool:
+    """True, если событие новое (защита от повторной доставки вебхука)."""
+    return dbx("INSERT OR IGNORE INTO ig_done(key, ts) VALUES(?,?)", (key, int(time.time()))).rowcount == 1
+
+
+def ig_log(ig_id: str, kind: str):
+    dbx("INSERT INTO ig_log(ig_id, ts, kind) VALUES(?,?,?)", (ig_id, int(time.time()), kind))
+
+
+def ig_touch(ig_id: str, uid: str, username: str | None = None) -> bool:
+    """Запоминает контакт. True — если человек новый."""
+    now = int(time.time())
+    row = db.execute("SELECT 1 FROM ig_contacts WHERE ig_id=? AND user_id=?", (ig_id, uid)).fetchone()
+    if row:
+        if username:
+            dbx("UPDATE ig_contacts SET last_seen=?, username=? WHERE ig_id=? AND user_id=?", (now, username, ig_id, uid))
+        else:
+            dbx("UPDATE ig_contacts SET last_seen=? WHERE ig_id=? AND user_id=?", (now, ig_id, uid))
+        return False
+    dbx(
+        "INSERT INTO ig_contacts(ig_id, user_id, username, first_seen, last_seen) VALUES(?,?,?,?,?)",
+        (ig_id, uid, username or "", now, now),
+    )
+    return True
+
+
+def ig_match(rule, text: str) -> bool:
+    kws = [k.strip().casefold() for k in re.split(r"[,;\n]", rule["keyword"] or "") if k.strip()]
+    if not kws or "*" in kws:
+        return True
+    low = (text or "").casefold()
+    return any(k in low for k in kws)
+
+
+def ig_rules_for(ig_id: str, kind: str) -> list:
+    rows = db.execute(
+        "SELECT * FROM ig_rules WHERE ig_id=? AND kind=? AND active=1", (ig_id, kind)
+    ).fetchall()
+    # сначала правила для конкретного поста и с конкретным словом, «любое слово» — в конце
+    return sorted(rows, key=lambda r: (not r["media_id"], "*" in (r["keyword"] or "*"), r["id"]))
+
+
+def ig_parse_buttons(text: str) -> list[dict]:
+    """Строки вида «Купить | https://сайт.com». Не больше 3 кнопок."""
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line == "-":
+            continue
+        if "|" in line:
+            title, url = [x.strip() for x in line.split("|", 1)]
+        else:
+            title, url = "Открыть", line
+        if not url.startswith("http"):
+            if "." in url and " " not in url:
+                url = "https://" + url
+            else:
+                continue
+        out.append({"t": (title or "Открыть")[:20], "u": url})
+        if len(out) == 3:
+            break
+    return out
+
+
+# ---------- запросы к Instagram API ----------
+class IGError(Exception):
+    def __init__(self, msg: str, code: int = 0):
+        super().__init__(msg)
+        self.code = code
+
+
+def _ig_http_sync(method: str, url: str, params=None, body=None, form=None) -> dict:
+    if params:
+        url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+    data, headers = None, {"User-Agent": "Mozilla/5.0"}
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    elif form is not None:
+        data = urllib.parse.urlencode(form).encode()
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+    try:
+        js = json.loads(raw.decode("utf-8", "ignore") or "{}")
+    except ValueError:
+        js = {"error": {"message": raw[:200].decode("utf-8", "ignore")}}
+    if isinstance(js, dict):
+        er = js.get("error")
+        if er:
+            if isinstance(er, dict):
+                raise IGError(str(er.get("message", "error")), int(er.get("code") or 0))
+            raise IGError(str(er))
+        if js.get("error_message"):
+            raise IGError(str(js["error_message"]), int(js.get("code") or 0))
+    return js
+
+
+async def ig_call(method: str, path: str, token: str | None = None, params=None, body=None, form=None) -> dict:
+    url = path if path.startswith("http") else IG_API + path
+    params = dict(params or {})
+    if token:
+        params["access_token"] = token
+    return await asyncio.to_thread(_ig_http_sync, method, url, params, body, form)
+
+
+async def ig_tell_owner(acc, text: str):
+    """Пишет владельцу аккаунта в Telegram (не чаще раза в час на один текст)."""
+    if not BOT2 or not acc:
+        return
+    key = f"ig_note:{acc['ig_id']}:{text[:30]}"
+    now = time.time()
+    if now - notified.get(key, 0) < 3600:
+        return
+    notified[key] = now
+    try:
+        await BOT2.send_message(acc["owner"], text)
+    except Exception:
+        pass
+
+
+notified: dict[str, float] = {}
+
+
+def ig_button_url(b: dict) -> str:
+    return f"{WEBAPP_URL}/r/{b['l']}" if WEBAPP_URL and b.get("l") else b["u"]
+
+
+async def ig_send(acc, text: str, buttons: list[dict] | None = None, user_id: str | None = None,
+                  comment_id: str | None = None, postback: tuple[str, str] | None = None):
+    """Личное сообщение. Если указан comment_id — это «ответ в личку» на комментарий."""
+    rec = {"comment_id": comment_id} if comment_id else {"id": user_id}
+    buttons = buttons or []
+    btns = [{"type": "web_url", "url": ig_button_url(b), "title": b["t"][:20]} for b in buttons[:3]]
+    if postback and len(btns) < 3:
+        btns.append({"type": "postback", "title": postback[0][:20], "payload": postback[1]})
+    if btns:
+        msg = {"attachment": {"type": "template", "payload": {
+            "template_type": "button", "text": text[:640], "buttons": btns}}}
+    else:
+        msg = {"text": text[:1000]}
+    try:
+        await ig_call("POST", "/me/messages", acc["token"], body={"recipient": rec, "message": msg})
+    except IGError as e:
+        if e.code == 190:
+            await ig_tell_owner(acc, "⚠️ Instagram отключил доступ (токен устарел). Подключите аккаунт заново: /menu → Подключить.")
+            raise
+        if not btns:
+            raise
+        # запасной вариант: обычный текст со ссылками
+        plain = text + "\n\n" + "\n".join(f"{b['t']}: {ig_button_url(b)}" for b in buttons[:3])
+        await ig_call("POST", "/me/messages", acc["token"],
+                      body={"recipient": rec, "message": {"text": plain[:1000]}})
+
+
+async def ig_check_follow(acc, uid: str) -> bool | None:
+    """Подписан ли человек на аккаунт. None — Instagram не ответил."""
+    try:
+        r = await ig_call("GET", f"/{uid}", acc["token"], params={"fields": "username,is_user_follow_business"})
+    except IGError:
+        return None
+    f = r.get("is_user_follow_business")
+    if f is None:
+        return None
+    f = bool(f)
+    row = db.execute("SELECT follows, username FROM ig_contacts WHERE ig_id=? AND user_id=?",
+                     (acc["ig_id"], uid)).fetchone()
+    old = row["follows"] if row else -1
+    uname = r.get("username") or (row["username"] if row else "")
+    if not row:
+        ig_touch(acc["ig_id"], uid, uname)
+    dbx("UPDATE ig_contacts SET follows=?, follow_checked=?, username=? WHERE ig_id=? AND user_id=?",
+        (int(f), int(time.time()), uname, acc["ig_id"], uid))
+    if old == 0 and f:
+        dbx("INSERT INTO ig_events(ig_id,user_id,username,kind,ts) VALUES(?,?,?,?,?)",
+            (acc["ig_id"], uid, uname, "follow", int(time.time())))
+    elif old == 1 and not f:
+        dbx("INSERT INTO ig_events(ig_id,user_id,username,kind,ts) VALUES(?,?,?,?,?)",
+            (acc["ig_id"], uid, uname, "unfollow", int(time.time())))
+    return f
+
+
+def ig_follow_buttons(acc) -> list[dict]:
+    return [{"t": "Подписаться", "u": f"https://www.instagram.com/{acc['username']}/"}]
+
+
+def ig_products(acc) -> list:
+    return db.execute("SELECT * FROM ig_products WHERE ig_id=? ORDER BY id LIMIT 10", (acc["ig_id"],)).fetchall()
+
+
+async def ig_send_catalog(acc, user_id: str):
+    """Карусель товаров: фото, название, цена, кнопка со ссылкой."""
+    elements = []
+    for p in ig_products(acc):
+        el = {"title": p["title"][:80], "subtitle": (p["subtitle"] or "")[:80] or "—",
+              "buttons": [{"type": "web_url", "url": ig_button_url({"u": p["url"], "l": p["link_id"]}),
+                           "title": (p["btn"] or "Купить")[:20]}]}
+        if p["img"] and WEBAPP_URL:
+            el["image_url"] = f"{WEBAPP_URL}/img/{p['img']}"
+        elements.append(el)
+    if not elements:
+        return
+    msg = {"attachment": {"type": "template", "payload": {"template_type": "generic", "elements": elements}}}
+    await ig_call("POST", "/me/messages", acc["token"], body={"recipient": {"id": user_id}, "message": msg})
+
+
+async def ig_sync_menu(acc) -> str:
+    """Кнопки меню чата (ice breakers) — до 4 штук. Возвращает текст ошибки или пустую строку."""
+    rules = db.execute("SELECT * FROM ig_rules WHERE ig_id=? AND kind='menu' AND active=1 ORDER BY id LIMIT 4",
+                       (acc["ig_id"],)).fetchall()
+    try:
+        if rules:
+            await ig_call("POST", "/me/messenger_profile", acc["token"], body={"ice_breakers": [{
+                "call_to_actions": [{"question": r["keyword"][:80], "payload": f"ib:{r['id']}"} for r in rules],
+                "locale": "default"}]})
+        else:
+            await ig_call("DELETE", "/me/messenger_profile", acc["token"], body={"fields": ["ice_breakers"]})
+    except IGError as e:
+        return str(e)
+    return ""
+
+
+async def ig_deliver(acc, rule, user_id: str | None = None, comment_id: str | None = None, verified: bool = False):
+    """Отправляет сообщение по правилу (с проверкой подписки и каталогом, если они включены)."""
+    if rule["need_follow"] and not verified:
+        await ig_send(acc, f"Чтобы получить это, подпишитесь на @{acc['username']}: нажмите «Подписаться», "
+                           "потом вернитесь сюда и нажмите «Проверить» 👇",
+                      ig_follow_buttons(acc), user_id=user_id, comment_id=comment_id,
+                      postback=("✅ Проверить", f"chk:{rule['id']}"))
+    else:
+        buttons = json.loads(rule["buttons"] or "[]")
+        has_cat = bool(rule["catalog"]) and bool(ig_products(acc))
+        if has_cat and comment_id:  # на комментарий можно ответить одним сообщением — каталог по кнопке
+            await ig_send(acc, rule["message"], buttons[:2], user_id=user_id, comment_id=comment_id,
+                          postback=("🛍 Каталог", f"cat:{rule['id']}"))
+        else:
+            await ig_send(acc, rule["message"], buttons, user_id=user_id, comment_id=comment_id)
+            if has_cat and user_id:
+                await ig_send_catalog(acc, user_id)
+        dbx("UPDATE ig_rules SET sent=sent+1 WHERE id=?", (rule["id"],))
+        ig_log(acc["ig_id"], "dm")
+    if user_id:
+        dbx("UPDATE ig_contacts SET last_auto=? WHERE ig_id=? AND user_id=?",
+            (int(time.time()), acc["ig_id"], user_id))
+
+
+# ---------- обработка событий Instagram (вебхук) ----------
+async def ig_on_comment(acc, v: dict):
+    cid = str(v.get("id") or "")
+    frm = v.get("from") or {}
+    uid = str(frm.get("id") or "")
+    text = v.get("text") or ""
+    media = str((v.get("media") or {}).get("id") or "")
+    if not cid or not uid or uid in (acc["ig_id"], str(acc["alt_id"])):
+        return  # свои же ответы не трогаем
+    if not ig_seen("c:" + cid):
+        return
+    sub = await get_sub(acc["owner"])
+    tier = tier_of(sub)
+    if tier == "expired":
+        await ig_tell_owner(acc, MSG_FREE_ENDED)
+        return
+    rules = ig_rules_for(acc["ig_id"], "comment")
+    if tier == "free":  # Free: одно правило на один пост
+        own = sorted((r for r in rules if r["media_id"]), key=lambda r: r["id"])
+        rules = own[:1]
+        if rules and not sub.get("free_started"):
+            await sub_update(acc["owner"], free_started=int(time.time()))
+    rule = next((r for r in rules
+                 if (not r["media_id"] or r["media_id"] == media) and ig_match(r, text)), None)
+    if not rule:
+        return
+    ig_touch(acc["ig_id"], uid, frm.get("username"))
+    ig_log(acc["ig_id"], "comment")
+    variants = [x.strip() for x in (rule["public_reply"] or "").splitlines() if x.strip()]
+    if variants:
+        try:
+            await ig_call("POST", f"/{cid}/replies", acc["token"], params={"message": random.choice(variants)})
+        except IGError:
+            logging.warning("IG: не удалось ответить в комментарии")
+    if tier != "pro":
+        return  # Free: только ответ в комментарии, без сообщения в Direct
+    try:
+        await ig_deliver(acc, rule, user_id=uid, comment_id=cid)
+    except IGError as e:
+        logging.warning("IG: личное сообщение на комментарий не ушло: %s", e)
+
+
+async def ig_on_messaging(acc, m: dict):
+    uid = str((m.get("sender") or {}).get("id") or "")
+    if not uid or uid in (acc["ig_id"], str(acc["alt_id"])):
+        return
+    if await acc_tier(acc) != "pro":
+        return  # автоматизация Direct — только Business Pro
+    msg = m.get("message") or {}
+    if msg.get("is_echo"):
+        return
+    pb = m.get("postback") or {}
+    mid = msg.get("mid") or pb.get("mid") or ""
+    if mid and not ig_seen("m:" + mid):
+        return
+    ig_touch(acc["ig_id"], uid)
+    payload = pb.get("payload") or (msg.get("quick_reply") or {}).get("payload") or ""
+    kind, _, rid = payload.partition(":")
+    if kind in ("chk", "ib", "cat") and rid.isdigit():
+        rule = db.execute("SELECT * FROM ig_rules WHERE id=? AND ig_id=?", (int(rid), acc["ig_id"])).fetchone()
+        if not rule:
+            return
+        if kind == "cat":  # «Каталог» из сообщения-ответа на комментарий
+            await ig_send_catalog(acc, uid)
+        elif kind == "ib":  # кнопка меню чата
+            await ig_deliver(acc, rule, user_id=uid)
+        else:  # «Проверить подписку»
+            f = await ig_check_follow(acc, uid)
+            if f is False:
+                await ig_send(acc, "Пока не вижу подписки 🙈 Подпишитесь и нажмите «Проверить» ещё раз.",
+                              ig_follow_buttons(acc), user_id=uid, postback=("✅ Проверить", f"chk:{rule['id']}"))
+            else:  # подписан (или Instagram не смог ответить — не мучаем человека)
+                await ig_deliver(acc, rule, user_id=uid, verified=True)
+        return
+    # упоминание аккаунта в сторис
+    if any(a.get("type") == "story_mention" for a in (msg.get("attachments") or [])):
+        rule = next(iter(ig_rules_for(acc["ig_id"], "story_mention")), None)
+        if rule:
+            await ig_deliver(acc, rule, user_id=uid)
+        return
+    text = msg.get("text") or ""
+    # ответ на сторис
+    if (msg.get("reply_to") or {}).get("story"):
+        rule = next((r for r in ig_rules_for(acc["ig_id"], "story_reply") if ig_match(r, text)), None)
+        if rule:
+            await ig_deliver(acc, rule, user_id=uid)
+            return
+    if not text:
+        return
+    rule = next((r for r in ig_rules_for(acc["ig_id"], "dm") if ig_match(r, text)), None)
+    if rule:
+        await ig_deliver(acc, rule, user_id=uid)
+        return
+    last = db.execute("SELECT last_auto FROM ig_contacts WHERE ig_id=? AND user_id=?",
+                      (acc["ig_id"], uid)).fetchone()["last_auto"]
+    reply = None
+    if last == 0 and acc["welcome_on"] and acc["welcome"]:
+        reply = acc["welcome"]
+    elif acc["dflt_on"] and acc["dflt"] and time.time() - last > IG_AUTO_COOLDOWN:
+        reply = acc["dflt"]
+    if reply:
+        await ig_send(acc, reply, user_id=uid)
+        dbx("UPDATE ig_contacts SET last_auto=? WHERE ig_id=? AND user_id=?",
+            (int(time.time()), acc["ig_id"], uid))
+        ig_log(acc["ig_id"], "dm")
+
+
+async def ig_handle_payload(data: dict):
+    for entry in data.get("entry", []) or []:
+        acc = ig_acc(entry.get("id"))
+        if not acc:
+            continue
+        for ch in entry.get("changes", []) or []:
+            if ch.get("field") == "comments":
+                try:
+                    await ig_on_comment(acc, ch.get("value") or {})
+                except Exception:
+                    logging.exception("IG: ошибка обработки комментария")
+        for m in entry.get("messaging", []) or []:
+            try:
+                await ig_on_messaging(acc, m)
+            except Exception:
+                logging.exception("IG: ошибка обработки сообщения")
+
+
+async def ig_webhook_get(request: web.Request):
+    q = request.query
+    if q.get("hub.mode") == "subscribe" and q.get("hub.verify_token") == IG_VERIFY:
+        return web.Response(text=q.get("hub.challenge", ""))
+    return web.Response(status=403, text="forbidden")
+
+
+async def ig_webhook_post(request: web.Request):
+    raw = await request.read()
+    if IG_APP_SECRET:
+        want = "sha256=" + hmac.new(IG_APP_SECRET.encode(), raw, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(request.headers.get("X-Hub-Signature-256", ""), want):
+            return web.Response(status=403, text="bad signature")
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return web.Response(status=400, text="bad json")
+    task = asyncio.create_task(ig_handle_payload(data))  # Instagram ждёт ответ быстро
+    bg_tasks.add(task)
+    task.add_done_callback(bg_tasks.discard)
+    return web.Response(text="ok")
+
+
+async def ig_redirect(request: web.Request):
+    row = db.execute("SELECT * FROM ig_links WHERE id=?", (request.match_info["lid"],)).fetchone()
+    if not row:
+        return web.Response(status=404, text="not found")
+    dbx("UPDATE ig_links SET clicks=clicks+1 WHERE id=?", (row["id"],))
+    ig_log(row["ig_id"], "click")
+    raise web.HTTPFound(row["url"])
+
+
+async def ig_image(request: web.Request):
+    name = request.match_info["name"]
+    path = IG_IMG_DIR / name
+    if not re.fullmatch(r"[0-9a-f]{12}\.jpg", name) or not path.exists():
+        return web.Response(status=404, text="not found")
+    return web.FileResponse(path)
+
+
+def ig_state(uid: int) -> str:
+    key = (IG_APP_SECRET or TOKEN2 or "x").encode()
+    return f"{uid}.{hmac.new(key, str(uid).encode(), hashlib.sha256).hexdigest()[:16]}"
+
+
+def ig_state_uid(state: str) -> int | None:
+    head, _, sig = (state or "").partition(".")
+    if head.isdigit() and hmac.compare_digest(ig_state(int(head)), f"{head}.{sig}"):
+        return int(head)
+    return None
+
+
+def ig_oauth_url(uid: int) -> str | None:
+    if not (IG_APP_ID and IG_APP_SECRET and WEBAPP_URL):
+        return None
+    q = urllib.parse.urlencode({
+        "client_id": IG_APP_ID, "redirect_uri": WEBAPP_URL + "/ig/oauth", "response_type": "code",
+        "scope": IG_SCOPES, "state": ig_state(uid), "force_reauth": "true",
+    })
+    return "https://www.instagram.com/oauth/authorize?" + q
+
+
+def _page(text: str) -> web.Response:
+    html = ("<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<body style='font-family:sans-serif;text-align:center;padding:40px'>"
+            f"<h2>{text}</h2></body>")
+    return web.Response(text=html, content_type="text/html")
+
+
+async def ig_oauth_cb(request: web.Request):
+    code = (request.query.get("code") or "").split("#")[0]
+    uid = ig_state_uid(request.query.get("state", ""))
+    if not code or not uid:
+        return _page("❌ Не получилось. Вернитесь в Telegram и нажмите «Подключить Instagram» снова.")
+    try:
+        r = await ig_call("POST", "https://api.instagram.com/oauth/access_token", form={
+            "client_id": IG_APP_ID, "client_secret": IG_APP_SECRET, "grant_type": "authorization_code",
+            "redirect_uri": WEBAPP_URL + "/ig/oauth", "code": code})
+        item = (r.get("data") or [r])[0]
+        token = item["access_token"]
+        try:  # долгий токен (60 дней)
+            r2 = await ig_call("GET", "https://graph.instagram.com/access_token", params={
+                "grant_type": "ig_exchange_token", "client_secret": IG_APP_SECRET, "access_token": token})
+            token = r2.get("access_token") or token
+        except IGError:
+            pass
+        acc, warn = await ig_connect(uid, token)
+    except PlanLimit as e:
+        return _page("🔒 " + str(e))
+    except Exception as e:
+        logging.exception("IG OAuth")
+        return _page("❌ Ошибка подключения: " + str(e)[:120])
+    if BOT2:
+        try:
+            await BOT2.send_message(uid, f"✅ Instagram @{acc['username']} подключён!\n" + (f"⚠️ {warn}\n" if warn else "")
+                                    + "Теперь создайте первую автоматизацию 👇", reply_markup=ig_menu_kb(uid))
+        except Exception:
+            pass
+    return _page("✅ Готово! Вернитесь в Telegram.")
+
+
+def ig_register_routes(app: web.Application):
+    app.router.add_get("/ig/webhook", ig_webhook_get)
+    app.router.add_post("/ig/webhook", ig_webhook_post)
+    app.router.add_get("/ig/oauth", ig_oauth_cb)
+    app.router.add_get("/r/{lid}", ig_redirect)
+    app.router.add_get("/img/{name}", ig_image)
+
+
+async def ig_snapshot(acc):
+    r = await ig_call("GET", "/me", acc["token"], params={"fields": "followers_count"})
+    if r.get("followers_count") is not None:
+        dbx("INSERT OR REPLACE INTO ig_followers(ig_id, day, cnt) VALUES(?,?,?)",
+            (acc["ig_id"], ig_today(), int(r["followers_count"])))
+        return int(r["followers_count"])
+    return None
+
+
+async def ig_connect(owner: int, token: str):
+    me = await ig_call("GET", "/me", token, params={"fields": "user_id,username,followers_count"})
+    ig_id = str(me.get("user_id") or me.get("id") or "")
+    if not ig_id:
+        raise IGError("Instagram не вернул ID аккаунта")
+    sub = await get_sub(owner, fresh=True)
+    mine = [a["ig_id"] for a in ig_accs_of(owner)]
+    if ig_id not in mine:
+        if tier_of(sub) == "pro":
+            if len(mine) >= PRO_MAX_ACCOUNTS:
+                raise PlanLimit(f"Лимит Business Pro — {PRO_MAX_ACCOUNTS} аккаунтов.")
+        elif mine:
+            raise PlanLimit("На Free можно подключить только 1 аккаунт. Подключите Business Pro: /tariff")
+    dbx(
+        "INSERT INTO ig_accounts(ig_id, alt_id, owner, username, token, token_at, created) VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(ig_id) DO UPDATE SET alt_id=excluded.alt_id, owner=excluded.owner, "
+        "username=excluded.username, token=excluded.token, token_at=excluded.token_at",
+        (ig_id, str(me.get("id") or ""), owner, me.get("username") or "", token, int(time.time()), int(time.time())),
+    )
+    acc = ig_acc(ig_id)
+    dbx("INSERT OR REPLACE INTO ig_sel(owner, ig_id) VALUES(?,?)", (owner, ig_id))
+    warn = ""
+    try:
+        await ig_call("POST", "/me/subscribed_apps", token,
+                      params={"subscribed_fields": "comments,messages,messaging_postbacks"})
+    except IGError as e:
+        warn = f"Не удалось включить вебхук: {e}"
+    if me.get("followers_count") is not None:
+        dbx("INSERT OR REPLACE INTO ig_followers(ig_id, day, cnt) VALUES(?,?,?)",
+            (ig_id, ig_today(), int(me["followers_count"])))
+    await client_update(owner, ig=[a["username"] for a in ig_accs_of(owner)])
+    return acc, warn
+
+
+async def ig_daily_once():
+    now = int(time.time())
+    dbx("DELETE FROM ig_done WHERE ts<?", (now - 3 * 86400,))
+    dbx("DELETE FROM ig_log WHERE ts<?", (now - 95 * 86400,))
+    for acc in db.execute("SELECT * FROM ig_accounts").fetchall():
+        try:
+            if not db.execute("SELECT 1 FROM ig_followers WHERE ig_id=? AND day=?", (acc["ig_id"], ig_today())).fetchone():
+                await ig_snapshot(acc)
+            if now - (acc["token_at"] or 0) > 30 * 86400:  # продлеваем токен
+                r = await ig_call("GET", "https://graph.instagram.com/refresh_access_token",
+                                  params={"grant_type": "ig_refresh_token", "access_token": acc["token"]})
+                if r.get("access_token"):
+                    dbx("UPDATE ig_accounts SET token=?, token_at=? WHERE ig_id=?", (r["access_token"], now, acc["ig_id"]))
+        except IGError as e:
+            if e.code == 190:
+                await ig_tell_owner(acc, "⚠️ Токен Instagram устарел. Подключите аккаунт заново: /menu")
+            logging.warning("IG daily: %s", e)
+            continue
+        if tier_of(await get_sub(acc["owner"])) != "pro":
+            continue  # динамика подписок по контактам — только Business Pro
+        # проверка подписки у контактов (кто подписался / отписался)
+        rows = db.execute(
+            "SELECT user_id FROM ig_contacts WHERE ig_id=? AND last_seen>? AND follow_checked<? "
+            "ORDER BY follow_checked LIMIT 60", (acc["ig_id"], now - 30 * 86400, now - 86400)).fetchall()
+        for r in rows:
+            await ig_check_follow(acc, r["user_id"])
+            dbx("UPDATE ig_contacts SET follow_checked=? WHERE ig_id=? AND user_id=?",
+                (now, acc["ig_id"], r["user_id"]))
+            await asyncio.sleep(1)
+
+
+async def ig_daily_loop():
+    while True:
+        try:
+            await ig_daily_once()
+        except Exception:
+            logging.exception("IG daily")
+        await asyncio.sleep(3600)
+
+
+# ---------- отчёты ----------
+def ig_names(rows, limit=15) -> str:
+    names = [("@" + r["username"]) if r["username"] else f"id{r['user_id']}" for r in rows]
+    s = ", ".join(names[:limit])
+    return s + (f" и ещё {len(names) - limit}" if len(names) > limit else "")
+
+
+def ig_subs_text(acc) -> str:
+    rows = db.execute("SELECT day, cnt FROM ig_followers WHERE ig_id=? AND day>=? ORDER BY day",
+                      (acc["ig_id"], ig_today(30))).fetchall()
+    out = [f"👥 Подписчики @{acc['username']} — 30 дней\n"]
+    if not rows:
+        out.append("Данных пока нет — учёт начнётся автоматически, загляните завтра.")
+    else:
+        first, last = rows[0], rows[-1]
+        diff = last["cnt"] - first["cnt"]
+        out.append(f"Сейчас: {last['cnt']}")
+        out.append(f"С {first['day']}: {first['cnt']} → {last['cnt']} ({'+' if diff >= 0 else ''}{diff})")
+        if len(rows) > 1:
+            out.append("\nПо дням:")
+            for a, b in list(zip(rows, rows[1:]))[-10:]:
+                d = b["cnt"] - a["cnt"]
+                out.append(f"{b['day'][5:]}: {b['cnt']} ({'+' if d >= 0 else ''}{d})")
+    since = int(time.time()) - 30 * 86400
+    ev = lambda k: db.execute("SELECT * FROM ig_events WHERE ig_id=? AND kind=? AND ts>? ORDER BY ts DESC",
+                              (acc["ig_id"], k, since)).fetchall()
+    fol, unf = ev("follow"), ev("unfollow")
+    out.append("\nСреди тех, кто писал или комментировал:")
+    out.append(f"✅ Подписались ({len(fol)}): {ig_names(fol) if fol else '—'}")
+    out.append(f"❌ Отписались ({len(unf)}): {ig_names(unf) if unf else '—'}")
+    out.append("\nℹ️ Instagram не отдаёт ни одному сервису (и ManyChat тоже) полный список подписчиков — "
+               "поэтому по именам видно только контактов бота, а по остальным — число.")
+    return "\n".join(out)
+
+
+def ig_stats_text(acc) -> str:
+    since = int(time.time()) - 30 * 86400
+    cnt = lambda k: db.execute("SELECT COUNT(*) FROM ig_log WHERE ig_id=? AND kind=? AND ts>?",
+                               (acc["ig_id"], k, since)).fetchone()[0]
+    contacts = db.execute("SELECT COUNT(*) FROM ig_contacts WHERE ig_id=?", (acc["ig_id"],)).fetchone()[0]
+    out = [f"📊 Статистика @{acc['username']} — 30 дней\n",
+           f"💬 Сработало на комментарии: {cnt('comment')}",
+           f"📩 Отправлено сообщений: {cnt('dm')}",
+           f"🔗 Кликов по ссылкам: {cnt('click')}",
+           f"👤 Контактов всего: {contacts}"]
+    rules = db.execute("SELECT r.*, COALESCE((SELECT SUM(clicks) FROM ig_links WHERE rule_id=r.id),0) AS cl "
+                       "FROM ig_rules r WHERE ig_id=? ORDER BY sent DESC LIMIT 8", (acc["ig_id"],)).fetchall()
+    if rules:
+        out.append("\nПо автоматизациям:")
+        for r in rules:
+            out.append(f"{IG_ICON.get(r['kind'], '•')} «{r['keyword']}» — отправлено {r['sent']}, кликов {r['cl']}")
+    prods = db.execute("SELECT p.title, COALESCE(l.clicks,0) AS cl FROM ig_products p "
+                       "LEFT JOIN ig_links l ON l.id=p.link_id WHERE p.ig_id=? ORDER BY cl DESC LIMIT 5",
+                       (acc["ig_id"],)).fetchall()
+    if prods:
+        out.append("\nТовары (клики по «Купить»):")
+        out += [f"🛍 {p['title'][:30]} — {p['cl']}" for p in prods]
+    return "\n".join(out)
+
+
+# ---------- Telegram-бот №2: кнопки и мастер настройки ----------
+def _b(text: str, data: str | None = None, url: str | None = None) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=data, url=url) if not url else InlineKeyboardButton(text=text, url=url)
+
+
+def _kb(rows) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def ig_menu_kb(uid: int) -> InlineKeyboardMarkup:
+    lock = "" if tier_of(sub_cached(uid)) == "pro" else "🔒 "
+    if not ig_acc_of(uid):
+        return _kb([[_b("🔗 Подключить Instagram", "g:connect")],
+                    [_b("💎 Тарифы", "t:menu"), _b("❓ Как это работает", "g:help")]])
+    return _kb([
+        [_b("➕ Новая автоматизация", "g:new")],
+        [_b("📋 Мои автоматизации", "g:list")],
+        [_b(lock + "💬 Автоответчик в Direct", "g:dm"), _b(lock + "🛍 Каталог", "g:cat")],
+        [_b(lock + "👥 Подписчики (30 дней)", "g:subs"), _b(lock + "📊 Статистика", "g:stats")],
+        [_b("📱 Аккаунты", "g:accs"), _b("💎 Тарифы", "t:menu")],
+        [_b("❓ Помощь", "g:help"), _b("🔌 Отключить", "g:disc")],
+    ])
+
+
+IG_WELCOME = (
+    "👋 Это бот для автоматизации Instagram — как ManyChat.\n\n"
+    "• Человек пишет под постом ключевое слово → бот отвечает в комментарии и присылает сообщение с кнопками в Direct\n"
+    "• Автоответчик в Direct: приветствие и ответы по словам\n"
+    "• Упоминание и ответ на сторис → сообщение в Direct\n• Меню в чате: кнопки «Цены», «Заказать», «Связаться»\n• Каталог товаров каруселью с фото и кнопкой «Купить»\n• «Сначала подпишись» → потом ссылка или товар\n"
+    "• Динамика подписчиков и статистика кликов\n\n"
+    "Нужен Instagram-аккаунт типа Business или Creator.\n\n"
+    "🆓 Free — 1 аккаунт, ответ в комментариях под одним постом, 3 дня.\n"
+    "💎 Business Pro — все функции. Тарифы: /tariff"
+)
+
+
+async def ig_show_menu(msg: Message, uid: int, text: str | None = None, edit: bool = False):
+    acc = ig_acc_of(uid)
+    sub = await get_sub(uid)
+    head = text or (IG_WELCOME if not acc else f"📱 Аккаунт: @{acc['username']}\nВыберите действие 👇")
+    if not text:
+        head += "\n\n" + plan_line(sub)
+    if edit:
+        await edit_or_answer(msg, head, reply_markup=ig_menu_kb(uid))
+    else:
+        await msg.answer(head, reply_markup=ig_menu_kb(uid))
+
+
+def ig_is_owner(uid: int) -> bool:
+    return not ADMIN_IDS or uid in ADMIN_IDS
+
+
+def ig_help_text(uid: int) -> str:
+    base = (
+        "❓ Как пользоваться\n\n"
+        "1. «Подключить Instagram» → войдите и разрешите доступ.\n"
+        "2. «Новая автоматизация» → выберите пост, ключевое слово («ХОЧУ»), текст и кнопки со ссылкой.\n"
+        "3. Готово: кто напишет слово в комментариях — получит сообщение в Direct.\n\n"
+        "Правила Instagram: на комментарий можно ответить в личку один раз и в течение 7 дней; "
+        "в Direct бот отвечает в течение 24 часов после сообщения человека."
+    )
+    if not ig_is_owner(uid):
+        return base
+    return base + (
+        "\n\n⚙️ Настройка владельца (один раз):\n"
+        "1) developers.facebook.com → Создать приложение (Business) → добавить продукт Instagram → «API с входом через Instagram».\n"
+        f"2) Webhooks → Callback URL:\n{(WEBAPP_URL or 'https://ВАШ-ДОМЕН') + '/ig/webhook'}\n"
+        f"Verify token:\n{IG_VERIFY}\n"
+        "Подписки: comments, messages, messaging_postbacks.\n"
+        f"3) Business login → Redirect URL:\n{(WEBAPP_URL or 'https://ВАШ-ДОМЕН') + '/ig/oauth'}\n"
+        "4) В bothost в переменные: BOT2_TOKEN, IG_APP_ID, IG_APP_SECRET, DOMAIN (адрес вашего бота на bothost).\n"
+        "5) Пока приложение Meta в режиме разработки, добавляйте Instagram-аккаунты в «Роли → Тестировщики Instagram».\n"
+        "6) Клиенты и тарифы: Firebase → Realtime Database → скопируйте адрес базы в FIREBASE_DB_URL "
+        "и «секрет базы данных» в FIREBASE_AUTH. Без них данные хранятся локально.\n"
+        "7) Чеки об оплате приходят админам из ADMIN_ID в этого бота."
+    )
+
+
+@dp2.message(CommandStart())
+@dp2.message(Command("menu"))
+async def ig_start(message: Message):
+    ig_wait.pop(message.from_user.id, None)
+    adm_wait.pop(message.from_user.id, None)
+    bg(client_touch(message.from_user))
+    await ig_show_menu(message, message.from_user.id)
+
+
+@dp2.message(Command("cancel"))
+async def ig_cancel(message: Message):
+    uid = message.from_user.id
+    ig_wait.pop(uid, None)
+    adm_wait.pop(uid, None)
+    pay = await pay_awaiting(uid)
+    if pay:
+        await pay_cancel_do(pay)
+    await ig_show_menu(message, uid, "Отменено.")
+
+
+IG_ICON = {"comment": "💬", "dm": "✉️", "story_mention": "📸", "story_reply": "↩️", "menu": "📋"}
+IG_KIND_NAME = {
+    "comment": "💬 Комментарии → Direct", "dm": "✉️ Сообщение в Direct", "story_mention": "📸 Упоминание в сторис",
+    "story_reply": "↩️ Ответ на сторис", "menu": "📋 Кнопка меню чата",
+}
+
+
+def ig_rule_title(r) -> str:
+    on = "✅" if r["active"] else "⏸"
+    return f"{on} {IG_ICON.get(r['kind'], '•')} «{(r['keyword'] or '*')[:20]}» · {r['sent']}"
+
+
+def ig_rule_card(r) -> str:
+    btns = json.loads(r["buttons"] or "[]")
+    clicks = db.execute("SELECT COALESCE(SUM(clicks),0) FROM ig_links WHERE rule_id=?", (r["id"],)).fetchone()[0]
+    kw_label = "Название кнопки меню" if r["kind"] == "menu" else "Слово"
+    lines = [IG_KIND_NAME.get(r["kind"], r["kind"]), f"{kw_label}: {r['keyword'] if r['keyword'] != '*' else 'любое'}"]
+    if r["kind"] == "comment":
+        lines.append("Пост: " + (r["media_id"] and "выбранный" or "все посты"))
+        if r["public_reply"]:
+            lines.append("Ответ в комментарии: " + r["public_reply"].splitlines()[0][:60])
+    lines += [f"Сообщение: {r['message'][:200]}"]
+    if btns:
+        lines.append("Кнопки: " + ", ".join(b["t"] for b in btns))
+    lines.append("Только для подписчиков: " + ("да" if r["need_follow"] else "нет"))
+    lines.append("Каталог товаров: " + ("да" if r["catalog"] else "нет"))
+    lines.append(f"\nОтправлено: {r['sent']} · Кликов: {clicks}")
+    lines.append("Статус: " + ("включено ✅" if r["active"] else "выключено ⏸"))
+    return "\n".join(lines)
+
+
+async def ig_finish_rule(call_or_msg: Message, uid: int):
+    w = ig_wait.pop(uid, None)
+    acc = ig_acc_of(uid)
+    if not w or not acc:
+        return
+    d = w["data"]
+    buttons = []
+    for b in d.get("buttons", []):
+        lid = uuid.uuid4().hex[:8]
+        dbx("INSERT INTO ig_links(id, url, ig_id, rule_id) VALUES(?,?,?,0)", (lid, b["u"], acc["ig_id"]))
+        buttons.append({**b, "l": lid})
+    cur = dbx(
+        "INSERT INTO ig_rules(ig_id, kind, keyword, media_id, message, buttons, public_reply, need_follow, catalog, created) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (acc["ig_id"], d["kind"], d["kw"], d.get("media", ""), d.get("msg", ""), json.dumps(buttons, ensure_ascii=False),
+         d.get("pub", ""), d.get("follow", 0), d.get("catalog", 0), int(time.time())))
+    for b in buttons:
+        dbx("UPDATE ig_links SET rule_id=? WHERE id=?", (cur.lastrowid, b["l"]))
+    tips = {
+        "comment": "Проверьте: с другого аккаунта напишите комментарий со словом под нужным постом.",
+        "dm": "Проверьте: с другого аккаунта напишите вашему аккаунту это слово в Direct.",
+        "story_mention": "Проверьте: с другого аккаунта упомяните ваш аккаунт в сторис.",
+        "story_reply": "Проверьте: с другого аккаунта ответьте на вашу сторис.",
+        "menu": "Кнопка появится в новом чате с вашим аккаунтом (у тех, кто ещё не писал вам).",
+    }
+    extra = ""
+    if d["kind"] == "menu":
+        err = await ig_sync_menu(acc)
+        extra = f"\n⚠️ Меню в Instagram не обновилось: {err[:150]}" if err else ""
+    sub = await get_sub(uid)
+    if tier_of(sub) != "pro" and d["kind"] == "comment":
+        fs = sub.get("free_started")
+        if not fs:
+            fs = int(time.time())
+            await sub_update(uid, free_started=fs)
+        extra += (f"\n🆓 Free: работает до {fdate(fs + FREE_DAYS * 86400)} "
+                  "(только публичный ответ под комментарием).")
+    await call_or_msg.answer(f"✅ Автоматизация создана!\n{tips[d['kind']]}{extra}", reply_markup=ig_menu_kb(uid))
+
+
+async def ig_ask_follow(msg: Message):
+    await msg.answer(
+        "Отправлять только тем, кто подписан на аккаунт?\n"
+        "(Бот пришлёт кнопку «Подписаться» — она откроет ваш профиль, — и кнопку «Проверить»)",
+        reply_markup=_kb([[_b("✅ Да, только подписчикам", "g:f:1")], [_b("Нет, всем", "g:f:0")]]))
+
+
+@dp2.callback_query(F.data.startswith("g:"))
+async def ig_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    parts = call.data.split(":")
+    act = parts[1]
+    msg = call.message
+    acc = ig_acc_of(uid)
+    sub = await get_sub(uid)
+    pro = tier_of(sub) == "pro"
+    await call.answer()
+    if act == "menu":
+        ig_wait.pop(uid, None)
+        return await ig_show_menu(msg, uid, edit=True)
+    if act == "help":
+        return await edit_or_answer(msg, ig_help_text(uid), reply_markup=_kb([[_b("⬅️ Меню", "g:menu")]]))
+    if act in ("connect", "token") and acc:
+        if not pro:
+            return await ig_paywall(msg, "Второй аккаунт Instagram (на Free — один)")
+        if len(ig_accs_of(uid)) >= PRO_MAX_ACCOUNTS:
+            return await edit_or_answer(msg, f"Достигнут лимит: {PRO_MAX_ACCOUNTS} аккаунтов.",
+                                        reply_markup=_kb([[_b("⬅️ Меню", "g:menu")]]))
+    if act == "connect":
+        url = ig_oauth_url(uid)
+        rows = []
+        if url:
+            rows.append([_b("📲 Войти через Instagram", url=url)])
+        rows += [[_b("🔑 Вставить токен вручную", "g:token")], [_b("⬅️ Меню", "g:menu")]]
+        txt = ("Нажмите кнопку, войдите в Instagram и разрешите доступ 👇" if url else
+               "Автовход ещё не настроен владельцем бота (нужны IG_APP_ID, IG_APP_SECRET и DOMAIN).\n"
+               "Можно подключить вручную по токену — см. «Помощь».")
+        return await edit_or_answer(msg, txt, reply_markup=_kb(rows))
+    if act == "token":
+        ig_wait[uid] = {"step": "token"}
+        return await msg.answer("Пришлите токен доступа Instagram одним сообщением (отмена: /cancel).")
+    if not acc:
+        return await ig_show_menu(msg, uid, "Сначала подключите Instagram 👇", edit=True)
+
+    if act in ("subs", "stats", "dm", "w", "df", "cat", "pa", "pd") and not pro:
+        names = {"subs": "Динамика подписчиков", "stats": "Статистика", "dm": "Автоответчик в Direct",
+                 "w": "Автоответчик в Direct", "df": "Автоответчик в Direct"}
+        return await ig_paywall(msg, names.get(act, "Каталог товаров"))
+
+    if act == "accs":
+        rows = [[_b(("✅ " if a["ig_id"] == acc["ig_id"] else "📱 ") + "@" + (a["username"] or a["ig_id"]),
+                    f"g:sa:{a['ig_id']}")] for a in ig_accs_of(uid)]
+        rows.append([_b("➕ Добавить аккаунт" + ("" if pro else " 🔒"), "g:connect")])
+        rows.append([_b("⬅️ Меню", "g:menu")])
+        lim = PRO_MAX_ACCOUNTS if pro else 1
+        return await edit_or_answer(
+            msg, f"📱 Ваши аккаунты Instagram ({len(ig_accs_of(uid))}/{lim})\nВыбран: @{acc['username']}",
+            reply_markup=_kb(rows))
+    if act == "sa":
+        target = ig_acc(parts[2])
+        if target and target["owner"] == uid:
+            dbx("INSERT OR REPLACE INTO ig_sel(owner, ig_id) VALUES(?,?)", (uid, target["ig_id"]))
+        return await ig_show_menu(msg, uid, edit=True)
+
+    if act == "disc":
+        return await edit_or_answer(msg, f"Отключить @{acc['username']}? Все автоматизации и данные будут удалены.",
+                                    reply_markup=_kb([[_b("Да, отключить", "g:disc2")], [_b("Отмена", "g:menu")]]))
+    if act == "disc2":
+        i = acc["ig_id"]
+        for tbl in ("ig_rules", "ig_contacts", "ig_events", "ig_followers", "ig_links", "ig_log", "ig_products"):
+            dbx(f"DELETE FROM {tbl} WHERE ig_id=?", (i,))
+        dbx("DELETE FROM ig_accounts WHERE ig_id=?", (i,))
+        return await ig_show_menu(msg, uid, "🔌 Аккаунт отключён.", edit=True)
+
+    if act == "subs":
+        return await edit_or_answer(msg, ig_subs_text(acc), reply_markup=_kb([[_b("⬅️ Меню", "g:menu")]]))
+    if act == "stats":
+        return await edit_or_answer(msg, ig_stats_text(acc), reply_markup=_kb([[_b("⬅️ Меню", "g:menu")]]))
+
+    # --- создание автоматизации ---
+    if act == "new":
+        lk = "" if pro else "🔒 "
+        first = "💬 Комментарии под постом → Direct" if pro else "💬 Ответ в комментариях (Free)"
+        return await edit_or_answer(msg, "Что автоматизируем?", reply_markup=_kb([
+            [_b(first, "g:k:comment")],
+            [_b(lk + "✉️ Сообщение в Direct по слову", "g:k:dm")],
+            [_b(lk + "📸 Упоминание в сторис", "g:k:story_mention")],
+            [_b(lk + "↩️ Ответ на сторис", "g:k:story_reply")],
+            [_b(lk + "📋 Кнопка меню в чате", "g:k:menu")],
+            [_b("⬅️ Меню", "g:menu")]]))
+    if act == "k":
+        kind = parts[2]
+        if not pro and kind != "comment":
+            return await ig_paywall(msg, "Эта автоматизация")
+        if not pro:
+            if tier_of(sub) == "expired":
+                return await ig_paywall(msg, f"Free-период ({FREE_DAYS} дня) закончился, новые автоматизации")
+            if db.execute("SELECT COUNT(*) FROM ig_rules WHERE ig_id=? AND kind='comment'",
+                          (acc["ig_id"],)).fetchone()[0] >= 1:
+                return await edit_or_answer(
+                    msg, "На Free доступна одна автоматизация: ответ в комментариях под одним постом на "
+                         f"{FREE_DAYS} дня. Удалите старую в «Мои автоматизации» или подключите Business Pro.",
+                    reply_markup=_kb([[_b("💎 Тарифы", "t:menu")], [_b("📋 Мои автоматизации", "g:list")],
+                                      [_b("⬅️ Меню", "g:menu")]]))
+        if kind == "menu" and db.execute("SELECT COUNT(*) FROM ig_rules WHERE ig_id=? AND kind='menu'",
+                                         (acc["ig_id"],)).fetchone()[0] >= 4:
+            return await msg.answer("Instagram разрешает максимум 4 кнопки меню. Удалите одну в «Мои автоматизации».")
+        ig_wait[uid] = {"step": "kw", "data": {"kind": kind}}
+        if kind == "comment":
+            try:
+                r = await ig_call("GET", "/me/media", acc["token"], params={"fields": "id,caption", "limit": 8})
+                posts = r.get("data") or []
+            except IGError:
+                posts = []
+            rows = [[_b("📌 Все посты и рилсы", "g:p:all")]] if pro else []
+            for p in posts:
+                cap = (p.get("caption") or "без подписи").replace("\n", " ")[:35]
+                rows.append([_b("📷 " + cap, f"g:p:{p['id']}")])
+            ask = "Под каким постом ловим комментарии?" + ("" if pro else " (на Free — один пост)")
+            return await edit_or_answer(msg, ask, reply_markup=_kb(rows + [[_b("⬅️ Меню", "g:menu")]]))
+        if kind == "story_mention":
+            ig_wait[uid] = {"step": "msg", "data": {"kind": kind, "kw": "*"}}
+            return await msg.answer("Кто упомянет ваш аккаунт в сторис — получит сообщение в Direct. Напишите его текст (до 640 символов).")
+        if kind == "story_reply":
+            return await msg.answer("На какое слово в ответе на сторис реагируем? Можно несколько через запятую.\n«*» — на любой ответ.")
+        if kind == "menu":
+            return await msg.answer("Название кнопки меню (до 80 символов), например: 💰 Цены")
+        return await msg.answer("Какое слово ждём в Direct? Можно несколько через запятую.\n«*» — на любое сообщение.")
+    if act == "p":
+        w = ig_wait.get(uid)
+        if not w:
+            return
+        if parts[2] == "all" and not pro:
+            return await ig_paywall(msg, "Все посты сразу")
+        w["data"]["media"] = "" if parts[2] == "all" else parts[2]
+        return await msg.answer("Какое слово ждём в комментариях? Например: ХОЧУ\nМожно несколько через запятую. «*» — любой комментарий.")
+    if act == "f":
+        w = ig_wait.get(uid)
+        if not w:
+            return
+        w["data"]["follow"] = int(parts[2])
+        if ig_products(acc):
+            return await msg.answer("Добавить к сообщению каталог товаров (карусель)?", reply_markup=_kb([
+                [_b("🛍 Да, с каталогом", "g:c:1")], [_b("Нет", "g:c:0")]]))
+        return await ig_finish_rule(msg, uid)
+    if act == "c":
+        w = ig_wait.get(uid)
+        if not w:
+            return
+        w["data"]["catalog"] = int(parts[2])
+        return await ig_finish_rule(msg, uid)
+
+    # --- каталог товаров ---
+    if act == "cat":
+        prods = ig_products(acc)
+        txt = "🛍 Каталог товаров (до 10)\n\n" + (
+            "\n".join(f"{i}. {p['title']} — {p['subtitle']}" for i, p in enumerate(prods, 1)) if prods else "Пока пусто.")
+        txt += "\n\nКаталог можно приложить к любой автоматизации — он придёт каруселью."
+        if not WEBAPP_URL:
+            txt += "\n⚠️ Не задан DOMAIN — фото в карточках не покажутся."
+        rows = [[_b("➕ Добавить товар", "g:pa")]] + [[_b("🗑 " + p["title"][:30], f"g:pd:{p['id']}")] for p in prods]
+        return await edit_or_answer(msg, txt, reply_markup=_kb(rows + [[_b("⬅️ Меню", "g:menu")]]))
+    if act == "pa":
+        if len(ig_products(acc)) >= 10:
+            return await msg.answer("Максимум 10 товаров в карусели Instagram. Удалите один.")
+        ig_wait[uid] = {"step": "p_title", "data": {}}
+        return await msg.answer("Название товара (до 80 символов):")
+    if act == "pd":
+        p = db.execute("SELECT * FROM ig_products WHERE id=? AND ig_id=?", (int(parts[2]), acc["ig_id"])).fetchone()
+        if p:
+            dbx("DELETE FROM ig_products WHERE id=?", (p["id"],))
+            dbx("DELETE FROM ig_links WHERE id=?", (p["link_id"],))
+            if p["img"]:
+                try:
+                    (IG_IMG_DIR / p["img"]).unlink()
+                except OSError:
+                    pass
+        call.data = "g:cat"
+        return await ig_cb(call)
+
+    # --- список и карточка ---
+    if act == "list":
+        rules = db.execute("SELECT * FROM ig_rules WHERE ig_id=? ORDER BY id DESC LIMIT 30", (acc["ig_id"],)).fetchall()
+        if not rules:
+            return await edit_or_answer(msg, "Пока пусто. Создайте первую автоматизацию 👇", reply_markup=ig_menu_kb(uid))
+        rows = [[_b(ig_rule_title(r), f"g:r:{r['id']}")] for r in rules] + [[_b("⬅️ Меню", "g:menu")]]
+        return await edit_or_answer(msg, "📋 Ваши автоматизации:", reply_markup=_kb(rows))
+    if act in ("r", "t", "d", "d2"):
+        r = db.execute("SELECT * FROM ig_rules WHERE id=? AND ig_id=?", (int(parts[2]), acc["ig_id"])).fetchone()
+        if not r:
+            return await ig_show_menu(msg, uid, edit=True)
+        if act == "t":
+            dbx("UPDATE ig_rules SET active=1-active WHERE id=?", (r["id"],))
+            r = db.execute("SELECT * FROM ig_rules WHERE id=?", (r["id"],)).fetchone()
+            if r["kind"] == "menu":
+                err = await ig_sync_menu(acc)
+                if err:
+                    await msg.answer(f"⚠️ Меню в Instagram не обновилось: {err[:150]}")
+        if act == "d":
+            return await edit_or_answer(msg, "Удалить эту автоматизацию?", reply_markup=_kb([
+                [_b("Да, удалить", f"g:d2:{r['id']}")], [_b("Отмена", f"g:r:{r['id']}")]]))
+        if act == "d2":
+            dbx("DELETE FROM ig_rules WHERE id=?", (r["id"],))
+            dbx("DELETE FROM ig_links WHERE rule_id=?", (r["id"],))
+            if r["kind"] == "menu":
+                err = await ig_sync_menu(acc)
+                if err:
+                    await msg.answer(f"⚠️ Меню в Instagram не обновилось: {err[:150]}")
+            call.data = "g:list"
+            return await ig_cb(call)
+        return await edit_or_answer(msg, ig_rule_card(r), reply_markup=_kb([
+            [_b("⏯ Вкл/выкл", f"g:t:{r['id']}"), _b("🗑 Удалить", f"g:d:{r['id']}")],
+            [_b("⬅️ К списку", "g:list")]]))
+
+    # --- автоответчик в Direct ---
+    if act in ("dm", "w", "df"):
+        if act == "w" and parts[2] == "tog":
+            dbx("UPDATE ig_accounts SET welcome_on=1-welcome_on WHERE ig_id=?", (acc["ig_id"],))
+        elif act == "w" and parts[2] == "edit":
+            ig_wait[uid] = {"step": "welcome"}
+            return await msg.answer("Пришлите текст приветствия — его получит человек, который пишет впервые.")
+        elif act == "df" and parts[2] == "tog":
+            dbx("UPDATE ig_accounts SET dflt_on=1-dflt_on WHERE ig_id=?", (acc["ig_id"],))
+        elif act == "df" and parts[2] == "edit":
+            ig_wait[uid] = {"step": "dflt"}
+            return await msg.answer("Пришлите текст ответа по умолчанию — для сообщений, где нет ключевых слов (не чаще раза в 12 часов).")
+        acc = ig_acc_of(uid)
+        txt = (f"💬 Автоответчик в Direct\n\n"
+               f"👋 Приветствие ({'вкл ✅' if acc['welcome_on'] else 'выкл ⏸'}):\n{acc['welcome'] or '— не задано —'}\n\n"
+               f"↩️ Ответ по умолчанию ({'вкл ✅' if acc['dflt_on'] else 'выкл ⏸'}):\n{acc['dflt'] or '— не задано —'}\n\n"
+               "Ответы по ключевым словам создаются в «Новая автоматизация».")
+        return await edit_or_answer(msg, txt, reply_markup=_kb([
+            [_b("✏️ Приветствие", "g:w:edit"), _b("⏯ Вкл/выкл", "g:w:tog")],
+            [_b("✏️ Ответ по умолчанию", "g:df:edit"), _b("⏯ Вкл/выкл", "g:df:tog")],
+            [_b("⬅️ Меню", "g:menu")]]))
+
+
+# ====================== тарифы и оплата ======================
+adm_wait: dict[int, str] = {}  # админ вводит причину отказа: id админа -> id платежа
+pay_busy: set[str] = set()  # платежи, которые прямо сейчас обрабатываются админом
+PAY_REASONS = [
+    "Деньги не поступили",
+    "Неверная сумма",
+    "Чек нечитаемый или не тот",
+    "Этот чек уже использован",
+    "✏️ Другая причина",
+]
+PRO_FEATURES = (
+    "• Ответ в комментариях + сообщения в Direct с кнопками\n"
+    "• «Сначала подпишись», автоответчик, сторис, меню чата, каталог\n"
+    f"• Статистика, динамика подписчиков, до {PRO_MAX_ACCOUNTS} аккаунтов"
+)
+
+
+def support_kb() -> InlineKeyboardMarkup:
+    return _kb([[_b("💬 Поддержка " + SUPPORT_USER, url=SUPPORT_URL)]])
+
+
+def pay_cancel_kb(pid: str) -> InlineKeyboardMarkup:
+    return _kb([[_b("❌ Отмена", f"t:cancel:{pid}")]])
+
+
+def pay_admin_kb(pid: str) -> InlineKeyboardMarkup:
+    return _kb([[_b("✅ Подтвердить", f"pa:ok:{pid}"), _b("❌ Отклонить", f"pa:no:{pid}")]])
+
+
+async def ig_paywall(msg: Message, what: str):
+    return await edit_or_answer(
+        msg, f"🔒 {what} — доступно на тарифе Business Pro.\n\nПодключите Business Pro и пользуйтесь всеми функциями.",
+        reply_markup=_kb([[_b("💎 Тарифы и оплата", "t:menu")], [_b("⬅️ Меню", "g:menu")]]))
+
+
+def plans_text(uid: int) -> str:
+    sub = sub_cached(uid)
+    pi, pm = PLANS["intro"], PLANS["month"]
+    lines = [
+        "💎 Тарифы", "",
+        "🆓 Free — бесплатно",
+        "• 1 аккаунт Instagram",
+        "• Только ответ в комментариях",
+        f"• 1 пост, {FREE_DAYS} дня", "",
+        "💎 Business Pro — все функции",
+        PRO_FEATURES,
+    ]
+    if intro_available(sub):
+        lines.append(f"🔥 Для первых пользователей: {pi['label']} — {pi['price']} TJS")
+    lines.append(f"💰 {pm['label']} — {pm['price']} TJS")
+    lines += ["", plan_line(sub)]
+    return "\n".join(lines)
+
+
+def plans_kb(uid: int) -> InlineKeyboardMarkup:
+    sub = sub_cached(uid)
+    rows = [[_b("🆓 Free", "t:sel:free")]]
+    if intro_available(sub):
+        p = PLANS["intro"]
+        rows.append([_b(f"🔥 Business Pro · {p['label']} · {p['price']} TJS", "t:sel:intro")])
+    p = PLANS["month"]
+    rows.append([_b(f"💎 Business Pro · {p['label']} · {p['price']} TJS", "t:sel:month")])
+    rows.append([_b("⬅️ Меню", "g:menu")])
+    return _kb(rows)
+
+
+@dp2.message(Command("tariff"))
+async def tariff_cmd(message: Message):
+    uid = message.from_user.id
+    ig_wait.pop(uid, None)
+    await get_sub(uid)
+    await message.answer(plans_text(uid), reply_markup=plans_kb(uid))
+
+
+@dp2.message(Command("grant"))
+async def grant_cmd(message: Message, command: CommandObject):
+    """Админ: /grant ID дни — выдать Business Pro вручную (0 — отключить)."""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    a = (command.args or "").split()
+    if len(a) != 2 or not a[0].isdigit() or not a[1].isdigit():
+        return await message.answer("Формат: /grant ID_пользователя дни\nПример: /grant 123456789 30\n0 дней — отключить Pro.")
+    uid, days = int(a[0]), int(a[1])
+    sub = await get_sub(uid, fresh=True)
+    now = int(time.time())
+    if days == 0:
+        await sub_update(uid, plan="free", until=0)
+        await client_update(uid, plan="free", until=0)
+        return await message.answer("✅ Business Pro отключён.")
+    base = max(now, int(sub.get("until") or 0)) if tier_of(sub) == "pro" else now
+    until = base + days * 86400
+    await sub_update(uid, plan="pro", until=until, intro_used=True, pending=None)
+    await client_update(uid, plan="pro", until=until)
+    await message.answer(f"✅ Business Pro выдан до {fdate(until)}")
+    try:
+        await BOT2.send_message(uid, f"🎁 Вам подключён Business Pro до {fdate(until)}", reply_markup=ig_menu_kb(uid))
+    except Exception:
+        pass
+
+
+@dp2.callback_query(F.data.startswith("t:"))
+async def tariff_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    parts = call.data.split(":")
+    act = parts[1]
+    msg = call.message
+    sub = await get_sub(uid)
+    await call.answer()
+    if act == "menu":
+        return await edit_or_answer(msg, plans_text(uid), reply_markup=plans_kb(uid))
+    if act == "sel":
+        key = parts[2]
+        if key == "free":
+            return await edit_or_answer(
+                msg, f"🆓 Тариф Free\n\n• 1 аккаунт Instagram\n• Только ответ в комментариях\n• 1 пост, {FREE_DAYS} дня\n\n"
+                     "Оплата не нужна. Больше возможностей — на Business Pro.",
+                reply_markup=_kb([[_b("⬅️ Тарифы", "t:menu")], [_b("📋 Меню", "g:menu")]]))
+        plan = PLANS.get(key)
+        if not plan or (key == "intro" and not intro_available(sub)):
+            return await edit_or_answer(msg, "Это предложение недоступно.", reply_markup=plans_kb(uid))
+        text = (f"💎 {plan['title']} — {plan['label']}\n💰 Сумма: {plan['price']} TJS\n\n"
+                f"Все функции:\n{PRO_FEATURES}")
+        if tier_of(sub) == "pro":
+            text += f"\n\nСейчас активен до {fdate(sub['until'])} — оплата продлит срок."
+        return await edit_or_answer(msg, text, reply_markup=_kb([
+            [_b("💳 Оплатить", f"t:pay:{key}")], [_b("⬅️ Назад", "t:menu")]]))
+    if act == "pay":
+        return await pay_start(call, uid, parts[2], sub)
+    if act == "cancel":
+        pay = await store_get(f"payments/{parts[2]}")
+        if isinstance(pay, dict) and pay.get("uid") == uid and pay.get("status") == "awaiting":
+            await pay_cancel_do(pay)
+        return await edit_or_answer(msg, "❌ Запрос на оплату отменён.", reply_markup=_kb([
+            [_b("💎 Тарифы", "t:menu")], [_b("📋 Меню", "g:menu")]]))
+
+
+async def pay_start(call: CallbackQuery, uid: int, key: str, sub: dict):
+    msg = call.message
+    plan = PLANS.get(key)
+    if not plan or (key == "intro" and not intro_available(sub)):
+        return await edit_or_answer(msg, "Это предложение недоступно.", reply_markup=plans_kb(uid))
+    if not ADMIN_IDS:
+        return await edit_or_answer(msg, f"Оплата временно недоступна. Напишите в поддержку {SUPPORT_USER}.",
+                                    reply_markup=support_kb())
+    ig_wait.pop(uid, None)
+    old_id = sub.get("pending")
+    if old_id:
+        old = await store_get(f"payments/{old_id}")
+        if isinstance(old, dict):
+            if old.get("status") == "review":
+                return await edit_or_answer(
+                    msg, "⏳ Ваш предыдущий платёж ещё проверяется. Подождите до 5 минут.\n\n"
+                         f"Если тариф не подключится — напишите в службу поддержки {SUPPORT_USER}",
+                    reply_markup=support_kb())
+            if old.get("status") == "awaiting":
+                await store_update(f"payments/{old_id}", {"status": "cancelled"})
+    pid = uuid.uuid4().hex[:10]
+    text = (f"💳 Оплата тарифа\n\n📦 Тариф: {plan['title']}\n⏱ Срок: {plan['label']}\n"
+            f"💰 Сумма: {plan['price']} TJS\n\n"
+            "Переведите сумму по номеру телефона:\n"
+            f"• DC City: {PAY_DC}\n• Alif Mobi: {PAY_ALIF}\n\n"
+            "📸 После оплаты отправьте чек (скриншот) сюда, в этот чат.")
+    m = await edit_or_answer(msg, text, reply_markup=pay_cancel_kb(pid))
+    u = call.from_user
+    await store_set(f"payments/{pid}", {
+        "id": pid, "uid": uid, "plan": key, "days": plan["days"], "amount": plan["price"],
+        "status": "awaiting", "created": int(time.time()), "name": u.full_name, "username": u.username or "",
+        "chat": m.chat.id, "msg_id": m.message_id,
+    })
+    await sub_update(uid, pending=pid)
+
+
+async def pay_awaiting(uid: int):
+    """Платёж, по которому бот ждёт чек от этого пользователя."""
+    pid = (await get_sub(uid)).get("pending")
+    if not pid:
+        return None
+    p = await store_get(f"payments/{pid}")
+    if isinstance(p, dict) and p.get("status") == "awaiting" and p.get("uid") == uid:
+        return p
+    return None
+
+
+async def pay_cancel_do(pay: dict):
+    await store_update(f"payments/{pay['id']}", {"status": "cancelled"})
+    await sub_update(pay["uid"], pending=None)
+
+
+async def pay_receipt(message: Message, pay: dict):
+    """Пользователь прислал чек: чистим старые сообщения, говорим «ждите», отправляем чек админам."""
+    uid = message.from_user.id
+    if message.photo:
+        kind, fid = "photo", message.photo[-1].file_id
+    else:
+        kind, fid = "document", message.document.file_id
+    if pay.get("msg_id"):  # старое сообщение с реквизитами
+        try:
+            await BOT2.delete_message(pay.get("chat") or uid, pay["msg_id"])
+        except Exception:
+            pass
+    wait = await message.answer(
+        "⏳ Ваш платёж обрабатывается, пожалуйста, подождите до 5 минут.\n\n"
+        f"Если тариф не подключится — напишите в службу поддержки {SUPPORT_USER}",
+        reply_markup=support_kb())
+    plan = PLANS.get(pay["plan"], {})
+    acc = ig_acc_of(uid)
+    card = (f"💳 Новый платёж #{pay['id']}\n\n"
+            f"👤 {pay.get('name') or '—'}" + (f" (@{pay['username']})" if pay.get("username") else "") + f"\n🆔 {uid}\n"
+            f"📦 Business Pro · {plan.get('label', '')}\n💰 {pay['amount']} TJS\n"
+            "📱 Instagram: " + (f"@{acc['username']}" if acc else "не подключён") +
+            "\n🕐 " + time.strftime("%d.%m %H:%M", time.gmtime(time.time() + TZ_OFFSET)))
+    adm: dict[str, int] = {}
+    for aid in ADMIN_IDS:
+        try:
+            if kind == "photo":
+                m = await BOT2.send_photo(aid, fid, caption=card, reply_markup=pay_admin_kb(pay["id"]))
+            else:
+                m = await BOT2.send_document(aid, fid, caption=card, reply_markup=pay_admin_kb(pay["id"]))
+            adm[str(aid)] = m.message_id
+        except Exception:
+            logging.warning("Не удалось отправить чек админу %s", aid)
+    if not adm:
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        return await message.answer(
+            f"❌ Не удалось передать чек. Отправьте его ещё раз или напишите в поддержку {SUPPORT_USER}.",
+            reply_markup=support_kb())
+    await store_update(f"payments/{pay['id']}", {
+        "status": "review", "file_id": fid, "kind": kind, "card": card, "adm": adm,
+        "wait_msg": wait.message_id, "wait_chat": wait.chat.id, "submitted": int(time.time())})
+
+
+@dp2.message(F.document)
+async def ig_doc(message: Message):
+    pay = await pay_awaiting(message.from_user.id)
+    mime = (message.document.mime_type or "")
+    if pay and (mime.startswith("image/") or mime == "application/pdf"):
+        return await pay_receipt(message, pay)
+    await ig_show_menu(message, message.from_user.id)
+
+
+async def pay_mark_cards(pay: dict, status: str):
+    """Убирает кнопки у карточек платежа у всех админов и дописывает итог."""
+    for aid, mid in (pay.get("adm") or {}).items():
+        try:
+            await BOT2.edit_message_caption(chat_id=int(aid), message_id=int(mid),
+                                            caption=(pay.get("card") or "")[:900] + "\n\n" + status,
+                                            reply_markup=None)
+        except Exception:
+            logging.warning("Не удалось обновить карточку платежа у админа %s", aid)
+
+
+async def pay_clear_wait(pay: dict):
+    if pay.get("wait_msg"):
+        try:
+            await BOT2.delete_message(int(pay.get("wait_chat") or pay["uid"]), int(pay["wait_msg"]))
+        except Exception:
+            pass
+
+
+async def pay_approve(pay: dict, admin):
+    uid = pay["uid"]
+    sub = await get_sub(uid, fresh=True)
+    now = int(time.time())
+    base = max(now, int(sub.get("until") or 0)) if tier_of(sub) == "pro" else now
+    until = base + int(pay["days"]) * 86400
+    await store_update(f"payments/{pay['id']}", {"status": "approved", "decided": now, "admin": admin.id})
+    await sub_update(uid, plan="pro", until=until, intro_used=True, pending=None, last_pay=pay["id"],
+                     rem_for=None, exp_for=None)
+    await client_update(uid, plan="pro", until=until)
+    await pay_mark_cards(pay, f"✅ Подтверждён ({admin.full_name}) · до {fdate(until)}")
+    await pay_clear_wait(pay)
+    try:
+        await BOT2.send_message(
+            uid, f"✅ Оплата подтверждена!\n\n💎 Business Pro активен до {fdate(until)}.\nВсе функции доступны.",
+            reply_markup=ig_menu_kb(uid))
+    except Exception:
+        logging.warning("Не удалось написать пользователю %s об оплате", uid)
+
+
+async def pay_reject(pay: dict, reason: str, admin):
+    uid = pay["uid"]
+    await store_update(f"payments/{pay['id']}", {"status": "rejected", "reason": reason,
+                                                 "decided": int(time.time()), "admin": admin.id})
+    await sub_update(uid, pending=None)
+    await pay_mark_cards(pay, f"❌ Отклонён ({admin.full_name})\nПричина: {reason}")
+    await pay_clear_wait(pay)
+    try:
+        await BOT2.send_message(
+            uid, f"❌ Платёж отклонён\n\nПричина: {reason}\n\nЕсли вы оплатили — отправьте чек снова "
+                 f"через «Тарифы» или напишите в службу поддержки {SUPPORT_USER}",
+            reply_markup=_kb([[_b("💎 Тарифы", "t:menu")], [_b("💬 Поддержка " + SUPPORT_USER, url=SUPPORT_URL)]]))
+    except Exception:
+        logging.warning("Не удалось написать пользователю %s об отказе", uid)
+
+
+@dp2.callback_query(F.data.startswith("pa:"))
+async def pay_admin_cb(call: CallbackQuery):
+    admin = call.from_user
+    if admin.id not in ADMIN_IDS:
+        return await call.answer()
+    parts = call.data.split(":")
+    act, pid = parts[1], parts[2]
+    pay = await store_get(f"payments/{pid}")
+    if not isinstance(pay, dict) or pay.get("status") != "review" or pid in pay_busy:
+        await call.answer("Этот платёж уже обработан", show_alert=True)
+        try:
+            await call.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+    if act == "no":  # выбор причины отказа
+        await call.answer()
+        rows = [[_b(r, f"pa:r:{pid}:{i}")] for i, r in enumerate(PAY_REASONS)] + [[_b("⬅️ Назад", f"pa:b:{pid}")]]
+        return await call.message.edit_reply_markup(reply_markup=_kb(rows))
+    if act == "b":
+        await call.answer()
+        return await call.message.edit_reply_markup(reply_markup=pay_admin_kb(pid))
+    if act == "r" and int(parts[3]) == len(PAY_REASONS) - 1:  # «Другая причина» — админ пишет текстом
+        await call.answer()
+        adm_wait[admin.id] = pid
+        return await call.message.answer("✏️ Напишите причину отказа одним сообщением (отмена: /cancel).")
+    pay_busy.add(pid)
+    try:
+        await call.answer()
+        if act == "ok":
+            await pay_approve(pay, admin)
+        elif act == "r":
+            await pay_reject(pay, PAY_REASONS[int(parts[3])], admin)
+    finally:
+        pay_busy.discard(pid)
+
+
+async def admin_reason_text(message: Message, text: str):
+    pid = adm_wait.pop(message.from_user.id, None)
+    pay = await store_get(f"payments/{pid}") if pid else None
+    if not isinstance(pay, dict) or pay.get("status") != "review" or pid in pay_busy:
+        return await message.answer("Этот платёж уже обработан.")
+    pay_busy.add(pid)
+    try:
+        await pay_reject(pay, text[:300], message.from_user)
+    finally:
+        pay_busy.discard(pid)
+    await message.answer("✅ Отказ отправлен пользователю.")
+
+
+async def ig_user_note(uid: int, text: str):
+    try:
+        await BOT2.send_message(uid, text, reply_markup=_kb([[_b("💎 Тарифы", "t:menu")]]))
+    except Exception:
+        pass
+
+
+async def sub_watch_once():
+    """Напоминание за 2 дня до конца Business Pro и сообщение об окончании."""
+    now = int(time.time())
+    for k, s in (await store_all("subs")).items():
+        if not isinstance(s, dict) or s.get("plan") != "pro" or not str(k).isdigit():
+            continue
+        uid, until = int(k), int(s.get("until") or 0)
+        if until <= now and s.get("exp_for") != until:
+            await sub_update(uid, exp_for=until)
+            await ig_user_note(uid, "⏸ Тариф Business Pro закончился. Автоматизации Direct остановлены.\n"
+                                    "Продлите тариф, чтобы вернуть все функции.")
+        elif 0 < until - now < 2 * 86400 and s.get("rem_for") != until:
+            await sub_update(uid, rem_for=until)
+            await ig_user_note(uid, f"⏰ Business Pro заканчивается {fdate(until)}. Продлить можно в «Тарифах».")
+
+
+async def sub_watch_loop():
+    while True:
+        try:
+            await sub_watch_once()
+        except Exception:
+            logging.exception("sub watch")
+        await asyncio.sleep(3600)
+
+
+@dp2.message(F.text)
+async def ig_text(message: Message):
+    uid = message.from_user.id
+    w = ig_wait.get(uid)
+    text = (message.text or "").strip()
+    sub = await get_sub(uid)
+    pro = tier_of(sub) == "pro"
+    if uid in adm_wait:
+        return await admin_reason_text(message, text)
+    if not w:
+        pay = await pay_awaiting(uid)
+        if pay:
+            return await message.answer("📸 Отправьте фото чека (скриншот оплаты) в этот чат.",
+                                        reply_markup=pay_cancel_kb(pay["id"]))
+        return await ig_show_menu(message, uid)
+    step = w["step"]
+    acc = ig_acc_of(uid)
+    if step == "token":
+        ig_wait.pop(uid, None)
+        try:
+            await message.delete()  # токен лучше не оставлять в чате
+        except Exception:
+            pass
+        try:
+            acc, warn = await ig_connect(uid, text)
+        except PlanLimit as e:
+            return await message.answer("🔒 " + str(e), reply_markup=ig_menu_kb(uid))
+        except Exception as e:
+            return await message.answer(f"❌ Токен не подошёл: {str(e)[:150]}", reply_markup=ig_menu_kb(uid))
+        return await message.answer(f"✅ Подключён @{acc['username']}\n" + (f"⚠️ {warn}" if warn else ""),
+                                    reply_markup=ig_menu_kb(uid))
+    if not acc:
+        ig_wait.pop(uid, None)
+        return await ig_show_menu(message, uid)
+    if step in ("welcome", "dflt"):
+        ig_wait.pop(uid, None)
+        if step == "welcome":
+            dbx("UPDATE ig_accounts SET welcome=?, welcome_on=1 WHERE ig_id=?", (text[:1000], acc["ig_id"]))
+        else:
+            dbx("UPDATE ig_accounts SET dflt=?, dflt_on=1 WHERE ig_id=?", (text[:1000], acc["ig_id"]))
+        return await message.answer("✅ Сохранено и включено.", reply_markup=_kb([[_b("💬 Автоответчик", "g:dm")]]))
+    d = w["data"]
+    if step == "kw":
+        d["kw"] = text[:80 if d["kind"] == "menu" else 100]
+        if d["kind"] == "comment" and not pro:  # Free: только публичный ответ под комментарием
+            d["msg"], d["buttons"] = "", []
+            w["step"] = "pub"
+            return await message.answer(
+                "Что ответить публично под комментарием? Можно несколько вариантов — каждый с новой строки "
+                "(бот выберет случайный).\n\nНапример:\nСпасибо! 🙏\nПишите, отвечу 📩")
+        w["step"] = "msg"
+        return await message.answer("Напишите сообщение, которое получит человек в Direct (до 640 символов).")
+    if step == "msg":
+        if len(text) > 640:
+            return await message.answer(f"Слишком длинно ({len(text)}). Максимум 640 символов — сократите.")
+        d["msg"] = text
+        w["step"] = "btns"
+        return await message.answer(
+            "Добавьте кнопки-ссылки (до 3), каждая с новой строки:\nНазвание | ссылка\n\n"
+            "Например:\nКупить | https://mysite.com/buy\n\nБез кнопок — отправьте «-»")
+    if step == "btns":
+        btns = ig_parse_buttons(text)
+        if text != "-" and not btns:
+            return await message.answer("Не нашёл ссылок. Формат: Название | https://сайт.com (или «-» без кнопок).")
+        d["buttons"] = btns
+        if d["kind"] == "comment":
+            w["step"] = "pub"
+            return await message.answer(
+                "Что ответить публично под комментарием? Можно несколько вариантов — каждый с новой строки "
+                "(бот выберет случайный).\n\nНапример:\nОтправил в Direct ✅\nПроверь личные сообщения 📩\n\nБез ответа — «-»")
+        w["step"] = "follow"
+        return await ig_ask_follow(message)
+    if step == "pub":
+        if not pro:
+            if text == "-":
+                return await message.answer("На Free нужен текст ответа под комментарием. Напишите его (отмена: /cancel).")
+            d["pub"] = text[:600]
+            return await ig_finish_rule(message, uid)
+        d["pub"] = "" if text == "-" else text[:600]
+        w["step"] = "follow"
+        return await ig_ask_follow(message)
+    # --- добавление товара ---
+    if step == "p_title":
+        d["title"] = text[:80]
+        w["step"] = "p_sub"
+        return await message.answer("Цена и короткое описание (до 80 символов), например: 120 сомони · размеры M–XL")
+    if step == "p_sub":
+        d["sub"] = text[:80]
+        if WEBAPP_URL:
+            w["step"] = "p_photo"
+            return await message.answer("Пришлите фото товара (лучше квадратное) или «-» без фото.")
+        d["img"] = ""
+        w["step"] = "p_url"
+        return await message.answer("Ссылка для кнопки (куда ведёт «Купить»):")
+    if step == "p_photo":
+        if text != "-":
+            return await message.answer("Пришлите именно фото (как картинку) или «-» без фото.")
+        d["img"] = ""
+        w["step"] = "p_url"
+        return await message.answer("Ссылка для кнопки (куда ведёт «Купить»):")
+    if step == "p_url":
+        found = ig_parse_buttons(text)
+        if not found:
+            return await message.answer("Не нашёл ссылку. Пример: https://mysite.com/product1")
+        d["url"] = found[0]["u"]
+        w["step"] = "p_btn"
+        return await message.answer("Название кнопки (до 20 символов), например «Купить» или «Заказать». «-» — «Купить».")
+    if step == "p_btn":
+        ig_wait.pop(uid, None)
+        lid = uuid.uuid4().hex[:8]
+        cur = dbx("INSERT INTO ig_products(ig_id, title, subtitle, img, url, btn, link_id, created) VALUES(?,?,?,?,?,?,?,?)",
+                  (acc["ig_id"], d["title"], d["sub"], d.get("img", ""), d["url"],
+                   "Купить" if text == "-" else text[:20], lid, int(time.time())))
+        dbx("INSERT INTO ig_links(id, url, ig_id, rule_id) VALUES(?,?,?,?)", (lid, d["url"], acc["ig_id"], -cur.lastrowid))
+        return await message.answer("✅ Товар добавлен.", reply_markup=_kb([
+            [_b("➕ Ещё товар", "g:pa")], [_b("🛍 Каталог", "g:cat")]]))
+    await ig_show_menu(message, uid)
+
+
+@dp2.message(F.photo)
+async def ig_photo(message: Message):
+    uid = message.from_user.id
+    w = ig_wait.get(uid)
+    pay = await pay_awaiting(uid)
+    if pay and not (w and w.get("step") == "p_photo"):
+        return await pay_receipt(message, pay)  # фото чека
+    if not w or w.get("step") != "p_photo":
+        return await ig_show_menu(message, uid)
+    IG_IMG_DIR.mkdir(parents=True, exist_ok=True)
+    name = uuid.uuid4().hex[:12] + ".jpg"
+    await BOT2.download(message.photo[-1], destination=IG_IMG_DIR / name)
+    w["data"]["img"] = name
+    w["step"] = "p_url"
+    await message.answer("Ссылка для кнопки (куда ведёт «Купить»):")
+
+
+async def ig_setup_commands(bot: Bot):
+    cmds = [
+        BotCommand(command="start", description="🚀 Начать"),
+        BotCommand(command="menu", description="📋 Меню"),
+        BotCommand(command="tariff", description="💎 Тарифы и оплата"),
+        BotCommand(command="cancel", description="✖️ Отмена"),
+    ]
+    try:
+        await bot.set_my_commands(cmds)
+    except Exception:
+        pass
+    for aid in ADMIN_IDS:
+        try:
+            await bot.set_my_commands(
+                cmds + [BotCommand(command="grant", description="🎁 Выдать Pro: /grant ID дни")],
+                scope=BotCommandScopeChat(chat_id=aid))
+        except Exception:
+            pass
+
+
 # ====================== запуск ======================
 async def cleanup_loop():
     """Удаляет файлы, на вопрос «да/нет» по которым не ответили 15 минут."""
@@ -2289,9 +4141,26 @@ async def main():
         )
     cleanup = asyncio.create_task(cleanup_loop())
     bg_tasks.add(cleanup)
-    await start_web_server(bot)
+    global BOT2
+    if TOKEN2 and TOKEN2 == TOKEN:
+        logging.warning("BOT2_TOKEN совпадает с BOT_TOKEN — второй бот не запущен, нужен отдельный токен")
+    elif TOKEN2:
+        BOT2 = Bot(TOKEN2)
+        await ig_setup_commands(BOT2)
+        ig_task = asyncio.create_task(ig_daily_loop())
+        bg_tasks.add(ig_task)
+        bg(sub_watch_loop())
+        logging.info("Бот №2 (Instagram): @%s", (await BOT2.get_me()).username)
+    await start_web_server(bot, BOT2)
     await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    if BOT2:
+        await BOT2.delete_webhook(drop_pending_updates=True)
+        await asyncio.gather(
+            dp.start_polling(bot),
+            dp2.start_polling(BOT2, handle_signals=False),
+        )
+    else:
+        await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
