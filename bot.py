@@ -2235,7 +2235,25 @@ IG_AUTO_COOLDOWN = 12 * 3600  # ответ по умолчанию — не ча
 
 # ---------- тарифы и оплата ----------
 FIREBASE_URL = (os.getenv("FIREBASE_DB_URL") or "").strip().rstrip("/")  # https://проект-default-rtdb.firebaseio.com
-FIREBASE_AUTH = (os.getenv("FIREBASE_AUTH") or "").strip()  # «секрет базы данных» (необязательно, но так безопаснее)
+FIREBASE_AUTH = (os.getenv("FIREBASE_AUTH") or "").strip()  # старый способ: «секрет базы данных» (необязательно)
+
+
+def _load_fb_key():
+    """JSON-ключ сервисного аккаунта Firebase: FIREBASE_KEY_B64 / FIREBASE_KEY / файл /app/data/firebase.json."""
+    try:
+        if os.getenv("FIREBASE_KEY_B64"):
+            return json.loads(base64.b64decode(os.environ["FIREBASE_KEY_B64"]))
+        if os.getenv("FIREBASE_KEY"):
+            return json.loads(os.environ["FIREBASE_KEY"])
+        f = DATA_DIR / "firebase.json"
+        if f.is_file():
+            return json.loads(f.read_text(encoding="utf-8"))
+    except Exception:
+        logging.warning("Не удалось прочитать ключ Firebase (JSON повреждён?)")
+    return None
+
+
+FIREBASE_KEY = _load_fb_key()
 SUPPORT_USER = "@IDIEVW"
 SUPPORT_URL = "https://t.me/IDIEVW"
 PAY_DC = os.getenv("PAY_DC", "978117811")  # DC City
@@ -2318,10 +2336,32 @@ def _kv_set(path: str, value) -> None:
     db.commit()
 
 
+_fb_tok = {"v": "", "exp": 0.0}
+
+
+def _fb_token() -> str:
+    """Токен доступа из JSON-ключа сервисного аккаунта (нужен пакет google-auth). Обновляется раз в ~50 минут."""
+    if time.time() < _fb_tok["exp"]:
+        return _fb_tok["v"]
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request as GoogleRequest
+
+    creds = service_account.Credentials.from_service_account_info(
+        FIREBASE_KEY,
+        scopes=["https://www.googleapis.com/auth/firebase.database",
+                "https://www.googleapis.com/auth/userinfo.email"],
+    )
+    creds.refresh(GoogleRequest())
+    _fb_tok["v"], _fb_tok["exp"] = creds.token, time.time() + 3000
+    return creds.token
+
+
 def _fb_sync(method: str, path: str, body=None):
     """Запрос к Firebase Realtime Database через REST."""
     url = f"{FIREBASE_URL}/{path}.json"
-    if FIREBASE_AUTH:
+    if FIREBASE_KEY:
+        url += "?access_token=" + urllib.parse.quote(_fb_token(), safe="")
+    elif FIREBASE_AUTH:
         url += "?auth=" + urllib.parse.quote(FIREBASE_AUTH, safe="")
     data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
@@ -3196,7 +3236,8 @@ def ig_help_text(uid: int) -> str:
         "4) В bothost в переменные: BOT2_TOKEN, IG_APP_ID, IG_APP_SECRET, DOMAIN (адрес вашего бота на bothost).\n"
         "5) Пока приложение Meta в режиме разработки, добавляйте Instagram-аккаунты в «Роли → Тестировщики Instagram».\n"
         "6) Клиенты и тарифы: Firebase → Realtime Database → скопируйте адрес базы в FIREBASE_DB_URL "
-        "и «секрет базы данных» в FIREBASE_AUTH. Без них данные хранятся локально.\n"
+        "и положите JSON-ключ сервисного аккаунта в /app/data/firebase.json (или FIREBASE_KEY_B64). "
+        "Без них данные хранятся локально.\n"
         "7) Чеки об оплате приходят админам из ADMIN_ID в этого бота."
     )
 
