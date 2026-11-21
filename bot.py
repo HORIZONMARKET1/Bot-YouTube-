@@ -3550,9 +3550,14 @@ async def web_index2(request: web.Request):
 
 async def ig_app_card(message: Message):
     """Отдельное сообщение с кнопкой «Открыть» (Mini App InstaFlow). Старое удаляем, новое закрепляем."""
-    if not WEBAPP_URL or not bot2_index_file():
-        return
     uid = message.from_user.id
+    if not WEBAPP_URL or not bot2_index_file():
+        why = ("WEBAPP_URL не задан на bothost" if not WEBAPP_URL else
+               "файл Bot2/index.html не найден рядом с bot.py (искал: " + ", ".join(str(f.relative_to(HERE)) for f in BOT2_INDEX_CANDIDATES) + ")")
+        logging.warning("InstaFlow Mini App не показан: %s", why)
+        if uid in ADMIN_IDS:
+            await message.answer("⚠️ Кнопка InstaFlow не показана: " + why)
+        return
     bot = message.bot
     try:
         uname = (await bot.me()).username
@@ -3578,6 +3583,11 @@ async def ig_app_card(message: Message):
     except Exception:
         logging.exception("ig_app_card")
 
+
+
+@dp2.message(Command("app"))
+async def ig_app_cmd(message: Message):
+    await ig_app_card(message)
 
 
 @dp2.message(CommandStart())
@@ -3637,7 +3647,9 @@ IG_REQ_INSTR = (
     "под своим профилем и нажмите «Принять».\n"
     "2. Аккаунт Instagram должен быть профессиональным (бизнес или автор), привязанным к Странице Facebook, "
     "с включённым «Разрешить доступ к сообщениям» (подробно: кнопка «📖 Инструкция» ниже).\n"
-    "3. Нажмите «Войти через Instagram» ниже, выберите свою Страницу и аккаунт Instagram и дайте боту разрешения.\n"
+    "3. Нажмите «Войти через Instagram» ниже. На экране «Select the business assets» выберите свой бизнес-портфель "
+    "и свой аккаунт Instagram. Рекламные кабинеты (Ad Accounts) не выбирайте. Нажмите Continue, на следующем экране "
+    "оставьте все разрешения включёнными и подтвердите.\n"
     "4. Вернитесь сюда и нажмите «Готово».")
 
 
@@ -3849,7 +3861,8 @@ IG_SETUP_GUIDE = (
     "3️⃣ Привязка к Странице Facebook\n"
     "• В Instagram: Профиль → «Редактировать профиль» → «Страница» (Page) → подключите или создайте Страницу Facebook.\n\n"
     "4️⃣ Вход в бота\n"
-    "• В боте нажмите «Войти через Instagram», выберите Страницу и аккаунт и разрешите доступ (все галочки включены).\n\n"
+    "• В боте нажмите «Войти через Instagram». Выберите свой бизнес-портфель и аккаунт Instagram (Ad Accounts пропустите), "
+    "нажмите Continue и подтвердите все разрешения. Затем вернитесь в бота и нажмите «Готово».\n\n"
     "Названия пунктов Instagram иногда меняет: если не нашли, введите слово в поиске настроек.")
 
 
@@ -4740,6 +4753,7 @@ async def ig_setup_commands(bot: Bot):
         BotCommand(command="start", description="🚀 Начать"),
         BotCommand(command="menu", description="📋 Меню"),
         BotCommand(command="tariff", description="💎 Тарифы и оплата"),
+        BotCommand(command="app", description="📲 Открыть InstaFlow"),
         BotCommand(command="cancel", description="✖️ Отмена"),
     ]
     try:
