@@ -3225,6 +3225,8 @@ def ig_register_routes(app: web.Application):
     app.router.add_get("/ig/webhook", ig_webhook_get)
     app.router.add_post("/ig/webhook", ig_webhook_post)
     app.router.add_get("/ig/oauth", ig_oauth_cb)
+    app.router.add_get("/instaflow", web_index2)
+    app.router.add_get("/instaflow/", web_index2)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/ig/delete-info", ig_delete_info)
@@ -3526,6 +3528,54 @@ def ig_help_text(uid: int) -> str:
     )
 
 
+# ---------- Mini App второго бота (InstaFlow): свой index, отдельный адрес /instaflow ----------
+BOT2_INDEX_CANDIDATES = [HERE / "Bot2" / "index.html", HERE / "bot2" / "index.html", HERE / "webapp2" / "index.html",
+                         HERE / "Bot2.html", HERE / "bot2.html"]
+
+
+def bot2_index_file():
+    return next((f for f in BOT2_INDEX_CANDIDATES if f.is_file()), None)
+
+
+async def web_index2(request: web.Request):
+    f = bot2_index_file()
+    if not f:
+        return web.Response(status=404, text="Файл Bot2/index.html не найден в репозитории")
+    return web.FileResponse(f, headers={"Cache-Control": "no-store"})
+
+
+async def ig_app_card(message: Message):
+    """Отдельное сообщение с кнопкой «Открыть» (Mini App InstaFlow). Старое удаляем, новое закрепляем."""
+    if not WEBAPP_URL or not bot2_index_file():
+        return
+    uid = message.from_user.id
+    bot = message.bot
+    try:
+        uname = (await bot.me()).username
+        url = f"{WEBAPP_URL}/instaflow?bot={uname}"
+        old = await store_get(f"ig_pin/{uid}")
+        if isinstance(old, int):
+            for fn in (bot.unpin_chat_message, bot.delete_message):
+                try:
+                    if fn is bot.unpin_chat_message:
+                        await fn(chat_id=uid, message_id=old)
+                    else:
+                        await fn(uid, old)
+                except Exception:
+                    pass
+        m = await message.answer(
+            "📲 InstaFlow\nУправляйте автоответчиком, тарифом и профилем в приложении.",
+            reply_markup=_kb([[InlineKeyboardButton(text="Открыть", web_app=WebAppInfo(url=url))]]))
+        await store_set(f"ig_pin/{uid}", m.message_id)
+        try:
+            await bot.pin_chat_message(chat_id=uid, message_id=m.message_id, disable_notification=True)
+        except Exception:
+            logging.warning("Не удалось закрепить сообщение InstaFlow у %s", uid)
+    except Exception:
+        logging.exception("ig_app_card")
+
+
+
 @dp2.message(CommandStart())
 @dp2.message(Command("menu"))
 async def ig_start(message: Message):
@@ -3533,6 +3583,8 @@ async def ig_start(message: Message):
     adm_wait.pop(message.from_user.id, None)
     bg(client_touch(message.from_user))
     await ig_show_menu(message, message.from_user.id)
+    if (message.text or "").startswith("/start"):
+        await ig_app_card(message)  # отдельное сообщение «InstaFlow» с кнопкой «Открыть» + закреп
 
 
 @dp2.message(Command("cancel"))
