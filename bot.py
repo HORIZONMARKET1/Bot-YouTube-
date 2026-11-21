@@ -2228,6 +2228,9 @@ import random  # noqa: E402
 TOKEN2 = os.getenv("BOT2_TOKEN")
 IG_APP_ID = (os.getenv("IG_APP_ID") or "").strip()
 IG_APP_SECRET = (os.getenv("IG_APP_SECRET") or "").strip()
+# Для входа через Instagram у приложения свой ID и секрет (Instagram → API setup with Instagram login). Если не заданы — берутся IG_APP_ID / IG_APP_SECRET.
+IG_LOGIN_APP_ID = (os.getenv("IG_LOGIN_APP_ID") or IG_APP_ID).strip()
+IG_LOGIN_APP_SECRET = (os.getenv("IG_LOGIN_APP_SECRET") or IG_APP_SECRET).strip()
 IG_VERIFY = os.getenv("IG_VERIFY_TOKEN") or hashlib.sha256(("ig" + (TOKEN2 or "")).encode()).hexdigest()[:16]
 IG_API = "https://graph.instagram.com/v21.0"
 FB_API = "https://graph.facebook.com/v27.0"  # единый вход Meta: токен системного пользователя
@@ -2965,9 +2968,10 @@ async def ig_webhook_get(request: web.Request):
 
 async def ig_webhook_post(request: web.Request):
     raw = await request.read()
-    if IG_APP_SECRET:
-        want = "sha256=" + hmac.new(IG_APP_SECRET.encode(), raw, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(request.headers.get("X-Hub-Signature-256", ""), want):
+    secrets = {x for x in (IG_APP_SECRET, IG_LOGIN_APP_SECRET) if x}
+    if secrets:
+        got = request.headers.get("X-Hub-Signature-256", "")
+        if not any(hmac.compare_digest(got, "sha256=" + hmac.new(x.encode(), raw, hashlib.sha256).hexdigest()) for x in secrets):
             return web.Response(status=403, text="bad signature")
     try:
         data = json.loads(raw)
@@ -3018,7 +3022,7 @@ def ig_oauth_url(uid: int) -> str | None:
         })
         return "https://www.facebook.com/dialog/oauth?" + q
     q = urllib.parse.urlencode({
-        "client_id": IG_APP_ID, "redirect_uri": WEBAPP_URL + "/ig/oauth", "response_type": "code",
+        "client_id": IG_LOGIN_APP_ID, "redirect_uri": WEBAPP_URL + "/ig/oauth", "response_type": "code",
         "scope": IG_SCOPES, "state": ig_state(uid), "force_reauth": "true",
     })
     return "https://www.instagram.com/oauth/authorize?" + q
@@ -3044,13 +3048,13 @@ async def ig_oauth_cb(request: web.Request):
             acc, warn = await ig_connect_fb(uid, r["access_token"])
         else:  # вход через Instagram (старая схема)
             r = await ig_call("POST", "https://api.instagram.com/oauth/access_token", form={
-                "client_id": IG_APP_ID, "client_secret": IG_APP_SECRET, "grant_type": "authorization_code",
+                "client_id": IG_LOGIN_APP_ID, "client_secret": IG_LOGIN_APP_SECRET, "grant_type": "authorization_code",
                 "redirect_uri": WEBAPP_URL + "/ig/oauth", "code": code})
             item = (r.get("data") or [r])[0]
             token = item["access_token"]
             try:  # долгий токен (60 дней)
                 r2 = await ig_call("GET", "https://graph.instagram.com/access_token", params={
-                    "grant_type": "ig_exchange_token", "client_secret": IG_APP_SECRET, "access_token": token})
+                    "grant_type": "ig_exchange_token", "client_secret": IG_LOGIN_APP_SECRET, "access_token": token})
                 token = r2.get("access_token") or token
             except IGError:
                 pass
@@ -3629,13 +3633,12 @@ def ig_req_instr_kb(uid: int):
 
 IG_REQ_INSTR = (
     "✅ Заявка одобрена!\n\n"
-    "1. В приложении Instagram откройте Настройки и в поиске найдите «Приглашения тестера» "
-    "(раздел «Сайты и приложения»). Примите приглашение.\n"
-    "2. Убедитесь, что аккаунт профессиональный и включено «Разрешить доступ к сообщениям» "
-    "(Настройки → Сообщения и ответы на истории → Контроль подключённых инструментов).\n"
-    "3. Нажмите «Войти через Instagram» ниже и дайте боту разрешение.\n"
-    "4. Вернитесь сюда и нажмите «Готово»."
-)
+    "1. Примите приглашение тестера в Facebook: откройте facebook.com/developers/requests (или уведомление Facebook) "
+    "под своим профилем и нажмите «Принять».\n"
+    "2. Аккаунт Instagram должен быть профессиональным (бизнес или автор), привязанным к Странице Facebook, "
+    "с включённым «Разрешить доступ к сообщениям» (подробно: кнопка «📖 Инструкция» ниже).\n"
+    "3. Нажмите «Войти через Instagram» ниже, выберите свою Страницу и аккаунт Instagram и дайте боту разрешения.\n"
+    "4. Вернитесь сюда и нажмите «Готово».")
 
 
 @dp2.callback_query(F.data == "g:locked")
@@ -3659,12 +3662,8 @@ async def ig_req_start(call: CallbackQuery):
         "Аккаунт должен быть профессиональным (бизнес или автор). Отмена: /cancel")
 
 
-async def ig_req_submit(message: Message, text: str):
+async def ig_req_submit(message: Message, login: str, fb: str):
     uid = message.from_user.id
-    login = text.strip().lstrip("@").split("?")[0].rstrip("/").split("/")[-1]
-    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", login):
-        ig_wait[uid] = {"step": "req"}
-        return await message.answer("❌ Логин выглядит неверно. Отправьте его ещё раз. Пример: @myshop")
     if not ADMIN_IDS:
         return await message.answer("⚠️ Администратор бота не настроен. Напишите владельцу бота напрямую.")
     u = message.from_user
@@ -3672,9 +3671,10 @@ async def ig_req_submit(message: Message, text: str):
     admin_text = (
         "📝 Заявка на подключение Instagram\n"
         f"Instagram: @{login}\nhttps://instagram.com/{login}\n"
+        f"Facebook: {fb}\n"
         f"Telegram: {who} ({u.full_name}), id {u.id}\n\n"
-        "Сначала добавьте логин в Meta: Роли в приложении → Роли → Добавить людей → Тестировщик Instagram. "
-        "Потом нажмите «Подтвердить».")
+        "Сначала добавьте человека в Meta: Роли в приложении → Роли → Добавить людей → роль «Тестировщик» "
+        "(по профилю Facebook). Потом нажмите «Подтвердить».")
     kb = _kb([[_b("✅ Подтвердить", f"g:apr:{uid}"), _b("❌ Отклонить", f"g:rej:{uid}")]])
     sent = 0
     for aid in ADMIN_IDS:
@@ -3737,8 +3737,9 @@ async def ig_req_done(call: CallbackQuery):
     await call.message.answer(
         "❌ Разрешение не одобрено.\n\n"
         "Проверьте:\n"
-        "1. Приглашение тестера принято в Instagram (Настройки → поиск «Приглашения тестера»).\n"
-        "2. Вы нажали «Войти через Instagram» и дали боту разрешение.\n\n"
+        "1. Приглашение тестера принято в Facebook (facebook.com/developers/requests).\n"
+        "2. Instagram профессиональный и привязан к Странице Facebook.\n"
+        "3. Вы нажали «Войти через Instagram», выбрали Страницу и аккаунт и дали боту все разрешения.\n\n"
         "После этого нажмите «Готово» снова.")
 
 
@@ -3845,8 +3846,10 @@ IG_SETUP_GUIDE = (
     "• «Контроль подключённых инструментов» (Connected tools).\n"
     "• Включите «Разрешить доступ к сообщениям».\n"
     "Без этого публичный ответ под комментарием идёт, а личное сообщение нет.\n\n"
-    "3️⃣ Вход в бота\n"
-    "• В боте нажмите «Войти через Instagram» и разрешите доступ (все галочки оставьте включёнными).\n\n"
+    "3️⃣ Привязка к Странице Facebook\n"
+    "• В Instagram: Профиль → «Редактировать профиль» → «Страница» (Page) → подключите или создайте Страницу Facebook.\n\n"
+    "4️⃣ Вход в бота\n"
+    "• В боте нажмите «Войти через Instagram», выберите Страницу и аккаунт и разрешите доступ (все галочки включены).\n\n"
     "Названия пунктов Instagram иногда меняет: если не нашли, введите слово в поиске настроек.")
 
 
@@ -4594,8 +4597,18 @@ async def ig_text(message: Message):
         return await message.answer(f"✅ Подключён @{acc['username']}\n" + (f"⚠️ {warn}" if warn else ""),
                                     reply_markup=ig_menu_kb(uid))
     if step == "req":
+        login = text.strip().lstrip("@").split("?")[0].rstrip("/").split("/")[-1]
+        if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", login):
+            return await message.answer("❌ Логин выглядит неверно. Отправьте его ещё раз. Пример: @myshop")
+        ig_wait[uid] = {"step": "req_fb", "data": {"login": login}}
+        return await message.answer(
+            "Теперь отправьте ссылку на ваш профиль Facebook (или имя и e-mail, на которые зарегистрирован Facebook).\n"
+            "Пример: https://www.facebook.com/ivan.petrov\n\n"
+            "Он нужен, чтобы мы добавили вас тестировщиком приложения. Аккаунт Instagram должен быть привязан к Странице Facebook.")
+    if step == "req_fb":
+        login = w["data"]["login"]
         ig_wait.pop(uid, None)
-        return await ig_req_submit(message, text)
+        return await ig_req_submit(message, login, text.strip()[:200])
     if not acc:
         ig_wait.pop(uid, None)
         return await ig_show_menu(message, uid)
