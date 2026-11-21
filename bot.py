@@ -3522,6 +3522,181 @@ async def ig_cancel(message: Message):
     await ig_show_menu(message, uid, "Отменено.")
 
 
+# ---------- Вход через Instagram: закрыт замком, открывается заявкой ----------
+_ig_gate: dict = {"open": False, "ok": set()}  # open — вход открыт всем; ok — кому админ подтвердил заявку
+_req_msgs: dict[int, list[int]] = {}  # сообщения «подождите» у пользователя с заявкой (удаляются при решении)
+_req_login: dict[int, str] = {}
+
+
+async def ig_gate_load():
+    try:
+        _ig_gate["open"] = bool(await store_get("ig_gate_open"))
+        ok = await store_all("ig_ok")
+        _ig_gate["ok"] = {int(k) for k in ok if str(k).isdigit()} if isinstance(ok, dict) else set()
+    except Exception:
+        logging.exception("ig_gate_load")
+
+
+def ig_login_allowed(uid: int) -> bool:
+    return _ig_gate["open"] or uid in _ig_gate["ok"] or uid in ADMIN_IDS
+
+
+def ig_req_instr_kb(uid: int):
+    rows = []
+    url = ig_oauth_url(uid)
+    if url:
+        rows.append([_b("📲 Войти через Instagram", url=url)])
+    rows.append([_b("✅ Готово", "g:ok")])
+    return _kb(rows)
+
+
+IG_REQ_INSTR = (
+    "✅ Заявка одобрена!\n\n"
+    "1. В приложении Instagram откройте Настройки и в поиске найдите «Приглашения тестера» "
+    "(раздел «Сайты и приложения»). Примите приглашение.\n"
+    "2. Убедитесь, что аккаунт профессиональный и включено «Разрешить доступ к сообщениям» "
+    "(Настройки → Сообщения и ответы на истории → Контроль подключённых инструментов).\n"
+    "3. Нажмите «Войти через Instagram» ниже и дайте боту разрешение.\n"
+    "4. Вернитесь сюда и нажмите «Готово»."
+)
+
+
+@dp2.callback_query(F.data == "g:locked")
+async def ig_locked_cb(call: CallbackQuery):
+    await call.answer("🔒 Функция в разработке. Подайте заявку на подключение.", show_alert=True)
+
+
+@dp2.callback_query(F.data == "g:req")
+async def ig_req_start(call: CallbackQuery):
+    uid = call.from_user.id
+    await call.answer()
+    if uid in _req_msgs:
+        return await call.message.answer("⏳ Ваша заявка уже отправлена. Пожалуйста, подождите 5–10 минут.")
+    if uid in _ig_gate["ok"]:
+        return await call.message.answer(IG_REQ_INSTR, reply_markup=ig_req_instr_kb(uid))
+    ig_wait[uid] = {"step": "req"}
+    await call.message.answer(
+        "📝 Заявка на подключение\n\n"
+        "Отправьте логин вашего Instagram.\n"
+        "Пример: @myshop или myshop\n\n"
+        "Аккаунт должен быть профессиональным (бизнес или автор). Отмена: /cancel")
+
+
+async def ig_req_submit(message: Message, text: str):
+    uid = message.from_user.id
+    login = text.strip().lstrip("@").split("?")[0].rstrip("/").split("/")[-1]
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", login):
+        ig_wait[uid] = {"step": "req"}
+        return await message.answer("❌ Логин выглядит неверно. Отправьте его ещё раз. Пример: @myshop")
+    if not ADMIN_IDS:
+        return await message.answer("⚠️ Администратор бота не настроен. Напишите владельцу бота напрямую.")
+    u = message.from_user
+    who = f"@{u.username}" if u.username else "без username"
+    admin_text = (
+        "📝 Заявка на подключение Instagram\n"
+        f"Instagram: @{login}\nhttps://instagram.com/{login}\n"
+        f"Telegram: {who} ({u.full_name}), id {u.id}\n\n"
+        "Сначала добавьте логин в Meta: Роли в приложении → Роли → Добавить людей → Тестировщик Instagram. "
+        "Потом нажмите «Подтвердить».")
+    kb = _kb([[_b("✅ Подтвердить", f"g:apr:{uid}"), _b("❌ Отклонить", f"g:rej:{uid}")]])
+    sent = 0
+    for aid in ADMIN_IDS:
+        try:
+            await message.bot.send_message(aid, admin_text, reply_markup=kb)
+            sent += 1
+        except Exception:
+            pass
+    if not sent:
+        return await message.answer("⚠️ Не удалось отправить заявку администратору. Попробуйте позже.")
+    m1 = await message.answer("⏳ Заявка отправлена. Это займёт 5–10 минут, пожалуйста, подождите.")
+    m2 = await message.answer("⏳")  # одиночный эмодзи Telegram показывает анимированным
+    _req_msgs[uid] = [m1.message_id, m2.message_id]
+    _req_login[uid] = login
+
+
+@dp2.callback_query(F.data.startswith("g:apr:") | F.data.startswith("g:rej:"))
+async def ig_req_decide(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("Только для администратора", show_alert=True)
+    _, kind, s = call.data.split(":")
+    uid = int(s)
+    if kind == "apr" and uid in _ig_gate["ok"] and uid not in _req_msgs:
+        return await call.answer("Уже подтверждено", show_alert=True)
+    await call.answer()
+    for mid in _req_msgs.pop(uid, []):  # убираем «подождите» и анимированный ⏳
+        try:
+            await call.bot.delete_message(uid, mid)
+        except Exception:
+            pass
+    _req_login.pop(uid, None)
+    mark = "✅ Подтверждено" if kind == "apr" else "❌ Отклонено"
+    try:
+        await call.message.edit_text((call.message.text or "") + f"\n\n{mark} ({call.from_user.full_name})")
+    except Exception:
+        pass
+    if kind == "apr":
+        _ig_gate["ok"].add(uid)
+        await store_set(f"ig_ok/{uid}", True)
+        try:
+            await call.bot.send_message(uid, IG_REQ_INSTR, reply_markup=ig_req_instr_kb(uid))
+        except Exception:
+            await call.message.answer("⚠️ Не удалось написать пользователю (он мог заблокировать бота).")
+    else:
+        try:
+            await call.bot.send_message(uid, "❌ Заявка отклонена. Если это ошибка, напишите администратору.")
+        except Exception:
+            pass
+
+
+@dp2.callback_query(F.data == "g:ok")
+async def ig_req_done(call: CallbackQuery):
+    uid = call.from_user.id
+    acc = ig_acc_of(uid)
+    if acc:
+        await call.answer()
+        ig_wait.pop(uid, None)
+        return await ig_show_menu(call.message, uid, f"✅ Ваш Instagram @{acc['username']} подключён!")
+    await call.answer("❌ Разрешение не одобрено", show_alert=True)
+    await call.message.answer(
+        "❌ Разрешение не одобрено.\n\n"
+        "Проверьте:\n"
+        "1. Приглашение тестера принято в Instagram (Настройки → поиск «Приглашения тестера»).\n"
+        "2. Вы нажали «Войти через Instagram» и дали боту разрешение.\n\n"
+        "После этого нажмите «Готово» снова.")
+
+
+def ig_gate_kb():
+    if _ig_gate["open"]:
+        return _kb([[_b("🔒 Закрыть вход (по заявкам)", "g:gate:0")]])
+    return _kb([[_b("🔓 Открыть вход для всех", "g:gate:1")]])
+
+
+def ig_gate_text() -> str:
+    return ("🔓 Вход через Instagram: ОТКРЫТ для всех." if _ig_gate["open"] else
+            f"🔒 Вход через Instagram: закрыт (по заявкам). Подтверждено заявок: {len(_ig_gate['ok'])}.")
+
+
+@dp2.message(Command("iglogin"))
+async def ig_gate_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    await message.answer(ig_gate_text(), reply_markup=ig_gate_kb())
+
+
+@dp2.callback_query(F.data.startswith("g:gate:"))
+async def ig_gate_cb(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("Только для администратора", show_alert=True)
+    _ig_gate["open"] = call.data.endswith(":1")
+    await store_set("ig_gate_open", _ig_gate["open"])
+    await call.answer("Готово")
+    try:
+        await call.message.edit_text(ig_gate_text(), reply_markup=ig_gate_kb())
+    except Exception:
+        pass
+
+
+
 IG_ICON = {"comment": "💬", "dm": "✉️", "story_mention": "📸", "story_reply": "↩️", "menu": "📋"}
 IG_KIND_NAME = {
     "comment": "💬 Комментарии → Direct", "dm": "✉️ Сообщение в Direct", "story_mention": "📸 Упоминание в сторис",
@@ -3624,12 +3799,14 @@ async def ig_cb(call: CallbackQuery):
     if act == "connect":
         url = ig_oauth_url(uid)
         rows = []
-        if url:
+        if ig_login_allowed(uid) and url:
             rows.append([_b("📲 Войти через Instagram", url=url)])
-        rows += [[_b("🔑 Вставить токен вручную", "g:token")], [_b("⬅️ Меню", "g:menu")]]
-        txt = ("Нажмите кнопку, войдите в Instagram и разрешите доступ 👇" if url else
-               "Автовход ещё не настроен владельцем бота (нужны IG_APP_ID, IG_APP_SECRET, IG_CONFIG_ID и адрес сайта WEBAPP_URL).\n"
-               "Можно подключить вручную по токену — см. «Помощь».")
+            txt = "Нажмите кнопку, войдите в Instagram и разрешите доступ 👇"
+        else:
+            rows.append([_b("🔒 Войти через Instagram", "g:locked")])
+            txt = ("🔒 Вход через Instagram пока в разработке.\n"
+                   "Подайте заявку на подключение, мы откроем доступ вручную 👇")
+        rows += [[_b("📝 Подать заявку на подключение", "g:req")], [_b("⬅️ Меню", "g:menu")]]
         return await edit_or_answer(msg, txt, reply_markup=_kb(rows))
     if act == "token":
         ig_wait[uid] = {"step": "token"}
@@ -4245,6 +4422,9 @@ async def ig_text(message: Message):
             return await message.answer(f"❌ Токен не подошёл: {str(e)[:150]}", reply_markup=ig_menu_kb(uid))
         return await message.answer(f"✅ Подключён @{acc['username']}\n" + (f"⚠️ {warn}" if warn else ""),
                                     reply_markup=ig_menu_kb(uid))
+    if step == "req":
+        ig_wait.pop(uid, None)
+        return await ig_req_submit(message, text)
     if not acc:
         ig_wait.pop(uid, None)
         return await ig_show_menu(message, uid)
@@ -4364,7 +4544,8 @@ async def ig_setup_commands(bot: Bot):
     for aid in ADMIN_IDS:
         try:
             await bot.set_my_commands(
-                cmds + [BotCommand(command="grant", description="🎁 Выдать Pro: /grant ID дни")],
+                cmds + [BotCommand(command="grant", description="🎁 Выдать Pro: /grant ID дни"),
+                         BotCommand(command="iglogin", description="🔓 Вход через Instagram: открыть/закрыть")],
                 scope=BotCommandScopeChat(chat_id=aid))
         except Exception:
             pass
@@ -4452,6 +4633,7 @@ async def main():
     elif TOKEN2:
         BOT2 = Bot(TOKEN2)
         await ig_setup_commands(BOT2)
+        await ig_gate_load()
         ig_task = asyncio.create_task(ig_daily_loop())
         bg_tasks.add(ig_task)
         bg(sub_watch_loop())
