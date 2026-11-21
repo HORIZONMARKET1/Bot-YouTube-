@@ -2688,11 +2688,19 @@ def ig_button_url(b: dict) -> str:
 
 
 async def ig_send(acc, text: str, buttons: list[dict] | None = None, user_id: str | None = None,
-                  comment_id: str | None = None, postback: tuple[str, str] | None = None):
-    """Личное сообщение. Если указан comment_id — это «ответ в личку» на комментарий."""
+                  comment_id: str | None = None, postback: tuple[str, str] | None = None,
+                  rule_id: int | None = None):
+    """Личное сообщение. Если указан comment_id — это «ответ в личку» на комментарий.
+    Кнопка с полем "n" (ещё одно сообщение) уходит как postback «bn:правило:номер» — см. ig_on_message."""
     rec = {"comment_id": comment_id} if comment_id else {"id": user_id}
     buttons = buttons or []
-    btns = [{"type": "web_url", "url": ig_button_url(b), "title": b["t"][:20]} for b in buttons[:3]]
+    btns = []
+    for i, b in enumerate(buttons[:3]):
+        if b.get("n"):
+            if rule_id:
+                btns.append({"type": "postback", "title": b["t"][:20], "payload": f"bn:{rule_id}:{i}"})
+        else:
+            btns.append({"type": "web_url", "url": ig_button_url(b), "title": b["t"][:20]})
     if postback and len(btns) < 3:
         btns.append({"type": "postback", "title": postback[0][:20], "payload": postback[1]})
     if btns:
@@ -2710,7 +2718,7 @@ async def ig_send(acc, text: str, buttons: list[dict] | None = None, user_id: st
         if not btns:
             raise
         # запасной вариант: обычный текст со ссылками
-        plain = text + "\n\n" + "\n".join(f"{b['t']}: {ig_button_url(b)}" for b in buttons[:3])
+        plain = text + "\n\n" + "\n".join(f"{b['t']}: {ig_button_url(b)}" for b in buttons[:3] if not b.get("n"))
         await ig_call("POST", ig_url(acc, f"/{acc['ig_id']}/messages"), acc["token"],
                       body={"recipient": rec, "message": {"text": plain[:1000]}})
 
@@ -2797,9 +2805,10 @@ async def ig_deliver(acc, rule, user_id: str | None = None, comment_id: str | No
         has_cat = bool(rule["catalog"]) and bool(ig_products(acc))
         if has_cat and comment_id:  # на комментарий можно ответить одним сообщением — каталог по кнопке
             await ig_send(acc, rule["message"], buttons[:2], user_id=user_id, comment_id=comment_id,
-                          postback=("🛍 Каталог", f"cat:{rule['id']}"))
+                          postback=("🛍 Каталог", f"cat:{rule['id']}"), rule_id=rule["id"])
         else:
-            await ig_send(acc, rule["message"], buttons, user_id=user_id, comment_id=comment_id)
+            await ig_send(acc, rule["message"], buttons, user_id=user_id, comment_id=comment_id,
+                          rule_id=rule["id"])
             if has_cat and user_id:
                 await ig_send_catalog(acc, user_id)
         dbx("UPDATE ig_rules SET sent=sent+1 WHERE id=?", (rule["id"],))
@@ -2868,6 +2877,18 @@ async def ig_on_messaging(acc, m: dict):
     ig_touch(acc["ig_id"], uid)
     payload = pb.get("payload") or (msg.get("quick_reply") or {}).get("payload") or ""
     kind, _, rid = payload.partition(":")
+    if kind == "bn":  # нажата кнопка «ещё сообщение»: bn:<правило>:<номер кнопки>
+        bits = payload.split(":")
+        if len(bits) == 3 and bits[1].isdigit() and bits[2].isdigit():
+            rule = db.execute("SELECT * FROM ig_rules WHERE id=? AND ig_id=?", (int(bits[1]), acc["ig_id"])).fetchone()
+            try:
+                nxt = json.loads(rule["buttons"] or "[]")[int(bits[2])].get("n") if rule else None
+            except (IndexError, ValueError):
+                nxt = None
+            if nxt and nxt.get("m"):
+                await ig_send(acc, nxt["m"], nxt.get("b") or [], user_id=uid)
+                ig_log(acc["ig_id"], "dm")
+        return
     if kind in ("chk", "ib", "cat") and rid.isdigit():
         rule = db.execute("SELECT * FROM ig_rules WHERE id=? AND ig_id=?", (int(rid), acc["ig_id"])).fetchone()
         if not rule:
@@ -3436,6 +3457,7 @@ def ig_menu_kb(uid: int) -> InlineKeyboardMarkup:
     lock = "" if tier_of(sub_cached(uid)) == "pro" else "🔒 "
     if not ig_acc_of(uid):
         return _kb([[_b("🔗 Подключить Instagram", "g:connect")],
+                    [_b("📖 Как подготовить аккаунт", "g:guide")],
                     [_b("💎 Тарифы", "t:menu"), _b("❓ Как это работает", "g:help")]])
     return _kb([
         [_b("➕ Новая автоматизация", "g:new")],
@@ -3478,6 +3500,8 @@ def ig_is_owner(uid: int) -> bool:
 def ig_help_text(uid: int) -> str:
     base = (
         "❓ Как пользоваться\n\n"
+        "0. Аккаунт должен быть профессиональным (бизнес или автор) и с включённым «Разрешить доступ к сообщениям» "
+        "(пошагово: кнопка «📖 Как подготовить аккаунт» при подключении).\n"
         "1. «Подключить Instagram» → войдите и разрешите доступ.\n"
         "2. «Новая автоматизация» → выберите пост, ключевое слово («ХОЧУ»), текст и кнопки со ссылкой.\n"
         "3. Готово: кто напишет слово в комментариях — получит сообщение в Direct.\n\n"
@@ -3546,6 +3570,7 @@ def ig_req_instr_kb(uid: int):
     url = ig_oauth_url(uid)
     if url:
         rows.append([_b("📲 Войти через Instagram", url=url)])
+    rows.append([_b("📖 Инструкция по настройке аккаунта", "g:guide")])
     rows.append([_b("✅ Готово", "g:ok")])
     return _kb(rows)
 
@@ -3697,6 +3722,90 @@ async def ig_gate_cb(call: CallbackQuery):
 
 
 
+BTN_ASK_NAME = (
+    "Добавьте кнопку под сообщением (до 3). Напишите название кнопки (до 20 символов), "
+    "например «Купить» или «Узнать больше».\n\n"
+    "Без кнопок — отправьте «-».\n"
+    "(Быстрый способ: «Название | ссылка» — сразу кнопка-ссылка.)")
+
+
+async def ig_after_buttons(message: Message, w: dict):
+    d = w["data"]
+    d.pop("cur", None)
+    if d["kind"] == "comment":
+        w["step"] = "pub"
+        return await message.answer(
+            "Что ответить публично под комментарием? Можно несколько вариантов — каждый с новой строки "
+            "(бот выберет случайный).\n\nНапример:\nОтправил в Direct ✅\nПроверь личные сообщения 📩\n\nБез ответа — «-»")
+    w["step"] = "follow"
+    return await ig_ask_follow(message)
+
+
+async def ig_btn_more(message: Message, w: dict):
+    d = w["data"]
+    w["step"] = "btn_more"
+    names = ", ".join(b["t"] + (" → сообщение" if b.get("n") else "") for b in d["buttons"])
+    rows = []
+    if len(d["buttons"]) < 3:
+        rows.append([_b("➕ Ещё кнопка", "g:bm:1")])
+    rows.append([_b("✅ Готово", "g:bm:0")])
+    return await message.answer(f"Кнопки: {names}", reply_markup=_kb(rows))
+
+
+@dp2.callback_query(F.data.startswith("g:ba:"))
+async def ig_btn_action_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    w = ig_wait.get(uid)
+    await call.answer()
+    if not w or w.get("step") != "btn_act" or "cur" not in w["data"]:
+        return await call.message.answer("Это окно устарело. Начните заново: /menu")
+    if call.data.endswith(":l"):
+        w["step"] = "btn_url"
+        return await call.message.answer("Пришлите ссылку, которую откроет кнопка.\nПример: https://mysite.com/buy")
+    w["step"] = "btn_msg"
+    await call.message.answer("Напишите второе сообщение: его человек получит после нажатия на кнопку (до 640 символов).")
+
+
+@dp2.callback_query(F.data.startswith("g:bm:"))
+async def ig_btn_more_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    w = ig_wait.get(uid)
+    await call.answer()
+    if not w or w.get("step") != "btn_more":
+        return await call.message.answer("Это окно устарело. Начните заново: /menu")
+    if call.data.endswith(":1") and len(w["data"]["buttons"]) < 3:
+        w["step"] = "btns"
+        return await call.message.answer(BTN_ASK_NAME)
+    return await ig_after_buttons(call.message, w)
+
+
+
+IG_SETUP_GUIDE = (
+    "📖 Как подготовить аккаунт (нужно один раз)\n\n"
+    "Чтобы автоответчик на комментарии работал, нужны два условия: профессиональный аккаунт и включённый доступ к сообщениям.\n\n"
+    "1️⃣ Профессиональный аккаунт (бизнес или автор)\n"
+    "• Откройте Instagram → свой профиль → меню ☰ (три полоски).\n"
+    "• Настройки и конфиденциальность → «Тип аккаунта и инструменты».\n"
+    "• «Переключиться на профессиональный аккаунт» → выберите «Бизнес» или «Автор» → категорию → «Готово».\n"
+    "Если пункта нет, вы уже на профессиональном аккаунте или найдите «профессиональный» через поиск в настройках.\n\n"
+    "2️⃣ Доступ к сообщениям\n"
+    "• Настройки и конфиденциальность → «Сообщения и ответы на истории».\n"
+    "• «Контроль подключённых инструментов» (Connected tools).\n"
+    "• Включите «Разрешить доступ к сообщениям».\n"
+    "Без этого публичный ответ под комментарием идёт, а личное сообщение нет.\n\n"
+    "3️⃣ Вход в бота\n"
+    "• В боте нажмите «Войти через Instagram» и разрешите доступ (все галочки оставьте включёнными).\n\n"
+    "Названия пунктов Instagram иногда меняет: если не нашли, введите слово в поиске настроек.")
+
+
+@dp2.callback_query(F.data == "g:guide")
+async def ig_guide_cb(call: CallbackQuery):
+    await call.answer()
+    await call.message.answer(IG_SETUP_GUIDE, reply_markup=_kb([[_b("🔗 Подключить Instagram", "g:connect")],
+                                                                  [_b("⬅️ Меню", "g:menu")]]))
+
+
+
 IG_ICON = {"comment": "💬", "dm": "✉️", "story_mention": "📸", "story_reply": "↩️", "menu": "📋"}
 IG_KIND_NAME = {
     "comment": "💬 Комментарии → Direct", "dm": "✉️ Сообщение в Direct", "story_mention": "📸 Упоминание в сторис",
@@ -3720,7 +3829,7 @@ def ig_rule_card(r) -> str:
             lines.append("Ответ в комментарии: " + r["public_reply"].splitlines()[0][:60])
     lines += [f"Сообщение: {r['message'][:200]}"]
     if btns:
-        lines.append("Кнопки: " + ", ".join(b["t"] for b in btns))
+        lines.append("Кнопки: " + ", ".join(b["t"] + (" → сообщение" if b.get("n") else "") for b in btns))
     lines.append("Только для подписчиков: " + ("да" if r["need_follow"] else "нет"))
     lines.append("Каталог товаров: " + ("да" if r["catalog"] else "нет"))
     lines.append(f"\nОтправлено: {r['sent']} · Кликов: {clicks}")
@@ -3734,18 +3843,27 @@ async def ig_finish_rule(call_or_msg: Message, uid: int):
     if not w or not acc:
         return
     d = w["data"]
-    buttons = []
-    for b in d.get("buttons", []):
+    buttons, link_ids = [], []
+
+    def _link(url: str) -> str:
         lid = uuid.uuid4().hex[:8]
-        dbx("INSERT INTO ig_links(id, url, ig_id, rule_id) VALUES(?,?,?,0)", (lid, b["u"], acc["ig_id"]))
-        buttons.append({**b, "l": lid})
+        dbx("INSERT INTO ig_links(id, url, ig_id, rule_id) VALUES(?,?,?,0)", (lid, url, acc["ig_id"]))
+        link_ids.append(lid)
+        return lid
+
+    for b in d.get("buttons", []):
+        if b.get("n"):  # кнопка «ещё сообщение»: внутри могут быть свои кнопки-ссылки
+            n = {"m": b["n"]["m"], "b": [{**x, "l": _link(x["u"])} for x in b["n"].get("b", [])]}
+            buttons.append({"t": b["t"], "n": n})
+        else:
+            buttons.append({**b, "l": _link(b["u"])})
     cur = dbx(
         "INSERT INTO ig_rules(ig_id, kind, keyword, media_id, message, buttons, public_reply, need_follow, catalog, created) "
         "VALUES(?,?,?,?,?,?,?,?,?,?)",
         (acc["ig_id"], d["kind"], d["kw"], d.get("media", ""), d.get("msg", ""), json.dumps(buttons, ensure_ascii=False),
          d.get("pub", ""), d.get("follow", 0), d.get("catalog", 0), int(time.time())))
-    for b in buttons:
-        dbx("UPDATE ig_links SET rule_id=? WHERE id=?", (cur.lastrowid, b["l"]))
+    for lid in link_ids:
+        dbx("UPDATE ig_links SET rule_id=? WHERE id=?", (cur.lastrowid, lid))
     tips = {
         "comment": "Проверьте: с другого аккаунта напишите комментарий со словом под нужным постом.",
         "dm": "Проверьте: с другого аккаунта напишите вашему аккаунту это слово в Direct.",
@@ -3806,7 +3924,8 @@ async def ig_cb(call: CallbackQuery):
             rows.append([_b("🔒 Войти через Instagram", "g:locked")])
             txt = ("🔒 Вход через Instagram пока в разработке.\n"
                    "Подайте заявку на подключение, мы откроем доступ вручную 👇")
-        rows += [[_b("📝 Подать заявку на подключение", "g:req")], [_b("⬅️ Меню", "g:menu")]]
+        rows += [[_b("📝 Подать заявку на подключение", "g:req")],
+                 [_b("📖 Как подготовить аккаунт", "g:guide")], [_b("⬅️ Меню", "g:menu")]]
         return await edit_or_answer(msg, txt, reply_markup=_kb(rows))
     if act == "token":
         ig_wait[uid] = {"step": "token"}
@@ -4450,22 +4569,43 @@ async def ig_text(message: Message):
         if len(text) > 640:
             return await message.answer(f"Слишком длинно ({len(text)}). Максимум 640 символов — сократите.")
         d["msg"] = text
+        d["buttons"] = []
         w["step"] = "btns"
-        return await message.answer(
-            "Добавьте кнопки-ссылки (до 3), каждая с новой строки:\nНазвание | ссылка\n\n"
-            "Например:\nКупить | https://mysite.com/buy\n\nБез кнопок — отправьте «-»")
+        return await message.answer(BTN_ASK_NAME)
     if step == "btns":
-        btns = ig_parse_buttons(text)
-        if text != "-" and not btns:
-            return await message.answer("Не нашёл ссылок. Формат: Название | https://сайт.com (или «-» без кнопок).")
-        d["buttons"] = btns
-        if d["kind"] == "comment":
-            w["step"] = "pub"
-            return await message.answer(
-                "Что ответить публично под комментарием? Можно несколько вариантов — каждый с новой строки "
-                "(бот выберет случайный).\n\nНапример:\nОтправил в Direct ✅\nПроверь личные сообщения 📩\n\nБез ответа — «-»")
-        w["step"] = "follow"
-        return await ig_ask_follow(message)
+        if text == "-":
+            return await ig_after_buttons(message, w)
+        quick = ig_parse_buttons(text)  # старый быстрый формат: «Название | ссылка» (можно несколько строк)
+        if quick and "|" in text:
+            d["buttons"] = quick
+            return await ig_after_buttons(message, w)
+        d["cur"] = {"t": text[:20]}
+        w["step"] = "btn_act"
+        return await message.answer(
+            f"Кнопка «{d['cur']['t']}». Что она делает?",
+            reply_markup=_kb([[_b("🔗 Открывает ссылку", "g:ba:l")], [_b("💬 Присылает ещё сообщение", "g:ba:m")]]))
+    if step == "btn_url":
+        found = ig_parse_buttons(f"{d['cur']['t']} | {text}")
+        if not found:
+            return await message.answer("Не похоже на ссылку. Пример: https://mysite.com/buy")
+        d["buttons"].append({"t": d["cur"]["t"], "u": found[0]["u"]})
+        d.pop("cur", None)
+        return await ig_btn_more(message, w)
+    if step == "btn_msg":
+        if len(text) > 640:
+            return await message.answer(f"Слишком длинно ({len(text)}). Максимум 640 символов — сократите.")
+        d["cur"]["n"] = {"m": text, "b": []}
+        w["step"] = "btn_sub"
+        return await message.answer(
+            "Кнопка под этим вторым сообщением (ссылка), формат:\nНазвание | ссылка\n\n"
+            "Например:\nОткрыть | https://mysite.com/buy\n\nБез кнопки — «-»")
+    if step == "btn_sub":
+        sub_btns = [] if text == "-" else ig_parse_buttons(text)[:2]
+        if text != "-" and not sub_btns:
+            return await message.answer("Не нашёл ссылку. Формат: Название | https://сайт.com (или «-» без кнопки).")
+        d["cur"]["n"]["b"] = sub_btns
+        d["buttons"].append(d.pop("cur"))
+        return await ig_btn_more(message, w)
     if step == "pub":
         if not pro:
             if text == "-":
