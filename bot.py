@@ -2373,7 +2373,7 @@ def _fb_sync(method: str, path: str, body=None):
     data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with urllib.request.urlopen(req, timeout=8) as r:
             raw = r.read()
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Firebase HTTP {e.code}: {e.read(200).decode('utf-8', 'ignore')}")
@@ -2389,10 +2389,10 @@ async def fb_alarm(err: str):
 async def store_get(path: str):
     if FIREBASE_URL:
         try:
-            return await asyncio.to_thread(_fb_sync, "GET", path)
+            return await asyncio.wait_for(asyncio.to_thread(_fb_sync, "GET", path), timeout=6)
         except Exception as e:
-            logging.warning("Firebase GET %s: %s", path, e)
-            await fb_alarm(str(e))
+            logging.warning("Firebase GET %s: %r", path, e)
+            asyncio.create_task(fb_alarm(str(e)))
     return _kv_get(path)
 
 
@@ -3048,10 +3048,134 @@ async def ig_oauth_cb(request: web.Request):
     return _page("✅ Готово! Вернитесь в Telegram.")
 
 
+# ---------- Политика конфиденциальности и обратные вызовы Meta (деавторизация / удаление данных) ----------
+PRIVACY_NAME = (os.getenv("PRIVACY_NAME") or "Inflow").strip()
+PRIVACY_EMAIL = (os.getenv("PRIVACY_EMAIL") or "").strip()
+
+
+def _privacy_html() -> str:
+    contact = (PRIVACY_EMAIL + " / " if PRIVACY_EMAIL else "") + f"Telegram {SUPPORT_USER}"
+    delete_url = (WEBAPP_URL or "") + "/ig/delete-info"
+    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{PRIVACY_NAME}: Политика конфиденциальности</title>
+<style>body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;line-height:1.55;color:#222}}
+h1{{font-size:26px}}h2{{font-size:19px;margin-top:28px}}hr{{margin:36px 0;border:0;border-top:1px solid #ddd}}</style></head><body>
+<h1>Политика конфиденциальности / Privacy Policy</h1>
+<p>Сервис «{PRIVACY_NAME}» (далее — Сервис) — Telegram-бот для автоматических ответов на комментарии и сообщения в Instagram. Дата обновления: 21.11.2026.</p>
+
+<h2>1. Какие данные мы получаем</h2>
+<p>После того как вы подключаете Instagram-аккаунт через «Вход через Instagram» и даёте разрешения, Сервис получает: ID и имя профиля Instagram, токен доступа, комментарии под публикациями вашего аккаунта, входящие сообщения вашего аккаунта и имя пользователя (username) тех, кто комментирует или пишет вам. Также мы храним ваш Telegram ID и настройки автоматизаций, которые вы создали.</p>
+
+<h2>2. Зачем мы используем данные</h2>
+<p>Только для работы функций, которые вы включили: публичный ответ на комментарий с ключевым словом, отправка личного сообщения человеку, который оставил комментарий, показ статистики. Мы не продаём данные, не передаём их третьим лицам для рекламы и не используем для обучения моделей.</p>
+
+<h2>3. Хранение и защита</h2>
+<p>Данные хранятся на защищённых серверах Сервиса и доступны только владельцу аккаунта и администратору Сервиса для поддержки. Токены доступа не публикуются и не передаются другим пользователям.</p>
+
+<h2>4. Отключение и удаление данных</h2>
+<p>Вы можете в любой момент отключить Instagram: в боте или в Instagram → Настройки → Сайты и приложения → удалить приложение. При этом мы удаляем токен доступа. Чтобы удалить все данные (правила, контакты, статистику), воспользуйтесь инструкцией: <a href="{delete_url}">{delete_url}</a> или напишите нам.</p>
+
+<h2>5. Контакты</h2>
+<p>{contact}</p>
+
+<hr>
+<h1>Privacy Policy (English)</h1>
+<p>"{PRIVACY_NAME}" (the Service) is a Telegram bot that automates replies to Instagram comments and direct messages. Last updated: 2026-11-21.</p>
+<h2>Data we collect</h2>
+<p>When you connect your Instagram professional account through Instagram Login and grant permissions, we receive: your Instagram account ID and username, an access token, comments on your media, messages sent to your account, and the usernames of people who comment or message you. We also store your Telegram ID and the automation settings you create.</p>
+<h2>How we use it</h2>
+<p>Only to provide the features you enable: replying publicly to comments with a trigger word, sending a private message to a person who commented, and showing statistics. We do not sell data, share it with third parties for advertising, or use it to train AI models.</p>
+<h2>Storage and security</h2>
+<p>Data is stored on protected servers and is accessible only to the account owner and Service administrators for support purposes.</p>
+<h2>Disconnecting and data deletion</h2>
+<p>You can disconnect Instagram at any time in the bot or in Instagram → Settings → Apps and Websites. We then delete your access token. To delete all your data, follow the instructions at <a href="{delete_url}">{delete_url}</a> or contact us.</p>
+<h2>Contact</h2>
+<p>{contact}</p>
+</body></html>"""
+
+
+async def privacy_page(request: web.Request):
+    return web.Response(text=_privacy_html(), content_type="text/html", charset="utf-8")
+
+
+async def ig_delete_info(request: web.Request):
+    code = request.query.get("code", "")
+    if code:
+        row = db.execute("SELECT ts FROM ig_done WHERE key=?", ("del:" + code,)).fetchone()
+        msg = ("✅ Запрос на удаление данных выполнен. / Your data deletion request has been completed."
+               if row else "Запрос не найден. / Request not found.")
+        return _page(msg)
+    html = (f"<meta name=viewport content='width=device-width,initial-scale=1'><body style='font-family:sans-serif;"
+            f"max-width:640px;margin:0 auto;padding:24px;line-height:1.55'><h2>Удаление данных / Data deletion</h2>"
+            f"<p>Чтобы удалить все данные: Instagram → Настройки → Сайты и приложения → удалите «{PRIVACY_NAME}». "
+            f"Данные будут удалены автоматически. Либо напишите нам в Telegram {SUPPORT_USER}.</p>"
+            f"<p>To delete your data: Instagram → Settings → Apps and Websites → remove “{PRIVACY_NAME}”. "
+            f"Your data is deleted automatically. You can also contact us on Telegram {SUPPORT_USER}.</p></body>")
+    return web.Response(text=html, content_type="text/html", charset="utf-8")
+
+
+def _parse_signed_request(sr: str) -> dict | None:
+    try:
+        sig_b64, payload_b64 = sr.split(".", 1)
+        pad = lambda x: x + "=" * (-len(x) % 4)
+        sig = base64.urlsafe_b64decode(pad(sig_b64))
+        want = hmac.new(IG_APP_SECRET.encode(), payload_b64.encode(), hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, want):
+            return None
+        return json.loads(base64.urlsafe_b64decode(pad(payload_b64)))
+    except Exception:
+        return None
+
+
+def _ig_wipe(ext_id: str, full: bool) -> int:
+    """Удаляет подключение (full=False: только токен/аккаунт) или все данные аккаунта (full=True)."""
+    rows = db.execute("SELECT ig_id FROM ig_accounts WHERE ig_id=? OR alt_id=?", (ext_id, ext_id)).fetchall()
+    for r in rows:
+        ig_id = r["ig_id"]
+        if full:
+            for t in ("ig_rules", "ig_contacts", "ig_events", "ig_followers", "ig_links", "ig_products", "ig_log"):
+                db.execute(f"DELETE FROM {t} WHERE ig_id=?", (ig_id,))
+        db.execute("DELETE FROM ig_accounts WHERE ig_id=?", (ig_id,))
+    db.commit()
+    return len(rows)
+
+
+async def _signed_req_id(request: web.Request):
+    form = await request.post()
+    data = _parse_signed_request(form.get("signed_request", "")) if IG_APP_SECRET else None
+    return data.get("user_id") if data else None
+
+
+async def ig_deauth(request: web.Request):
+    uid = await _signed_req_id(request)
+    if not uid:
+        return web.json_response({"error": "bad signed_request"}, status=400)
+    n = _ig_wipe(str(uid), full=False)
+    logging.info("IG deauth: %s (аккаунтов: %d)", uid, n)
+    return web.json_response({"ok": True})
+
+
+async def ig_delete_cb(request: web.Request):
+    uid = await _signed_req_id(request)
+    if not uid:
+        return web.json_response({"error": "bad signed_request"}, status=400)
+    n = _ig_wipe(str(uid), full=True)
+    code = uuid.uuid4().hex[:12]
+    db.execute("INSERT OR REPLACE INTO ig_done(key, ts) VALUES(?,?)", ("del:" + code, int(time.time())))
+    db.commit()
+    logging.info("IG delete: %s (аккаунтов: %d), код %s", uid, n, code)
+    return web.json_response({"url": f"{WEBAPP_URL}/ig/delete-info?code={code}", "confirmation_code": code})
+
+
+
 def ig_register_routes(app: web.Application):
     app.router.add_get("/ig/webhook", ig_webhook_get)
     app.router.add_post("/ig/webhook", ig_webhook_post)
     app.router.add_get("/ig/oauth", ig_oauth_cb)
+    app.router.add_get("/privacy", privacy_page)
+    app.router.add_get("/ig/delete-info", ig_delete_info)
+    app.router.add_post("/ig/deauth", ig_deauth)
+    app.router.add_post("/ig/delete", ig_delete_cb)
     app.router.add_get("/r/{lid}", ig_redirect)
     app.router.add_get("/img/{name}", ig_image)
 
@@ -3780,8 +3904,11 @@ async def tariff_cb(call: CallbackQuery):
     parts = call.data.split(":")
     act = parts[1]
     msg = call.message
+    try:
+        await call.answer()
+    except Exception:
+        pass
     sub = await get_sub(uid)
-    await call.answer()
     if act == "menu":
         return await edit_or_answer(msg, plans_text(uid), reply_markup=plans_kb(uid))
     if act == "sel":
