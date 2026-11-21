@@ -3462,9 +3462,11 @@ def _kb(rows) -> InlineKeyboardMarkup:
 def ig_menu_kb(uid: int) -> InlineKeyboardMarkup:
     lock = "" if tier_of(sub_cached(uid)) == "pro" else "🔒 "
     if not ig_acc_of(uid):
-        return _kb([[_b("🔗 Подключить Instagram", "g:connect")],
-                    [_b("📖 Как подготовить аккаунт", "g:guide")],
-                    [_b("💎 Тарифы", "t:menu"), _b("❓ Как это работает", "g:help")]])
+        first = (_b("🔗 Подключить Instagram", "g:connect") if ig_login_allowed(uid)  # после одобрения админа
+                 else _b("📝 Подать заявку на подключение", "g:req"))
+        return _kb([[first],
+                    [_b("❓ Как это работает", "g:help")],
+                    [_b("📖 Как подготовить аккаунт", "g:guide")]])
     return _kb([
         [_b("➕ Новая автоматизация", "g:new")],
         [_b("📋 Мои автоматизации", "g:list")],
@@ -3476,14 +3478,10 @@ def ig_menu_kb(uid: int) -> InlineKeyboardMarkup:
 
 
 IG_WELCOME = (
-    "👋 Это бот для автоматизации Instagram — как ManyChat.\n\n"
-    "• Человек пишет под постом ключевое слово → бот отвечает в комментарии и присылает сообщение с кнопками в Direct\n"
-    "• Автоответчик в Direct: приветствие и ответы по словам\n"
-    "• Упоминание и ответ на сторис → сообщение в Direct\n• Меню в чате: кнопки «Цены», «Заказать», «Связаться»\n• Каталог товаров каруселью с фото и кнопкой «Купить»\n• «Сначала подпишись» → потом ссылка или товар\n"
-    "• Динамика подписчиков и статистика кликов\n\n"
-    "Нужен Instagram-аккаунт типа Business или Creator.\n\n"
-    "🆓 Free — 1 аккаунт, ответ в комментариях под одним постом, 3 дня.\n"
-    "💎 Business Pro — все функции. Тарифы: /tariff"
+    "👋 InstaFlow — автоответчик для Instagram (как ManyChat).\n\n"
+    "Человек пишет под постом ключевое слово — бот отвечает в комментарии и присылает ему сообщение с кнопками в Direct.\n"
+    "Ещё: автоответчик, каталог товаров, статистика.\n\n"
+    "🆓 Free — 3 дня · 💎 Pro — все функции (/tariff)"
 )
 
 
@@ -3534,60 +3532,95 @@ def ig_help_text(uid: int) -> str:
 
 # ---------- Mini App второго бота (InstaFlow): свой index, отдельный адрес /instaflow ----------
 BOT2_INDEX_CANDIDATES = [HERE / "Bot2" / "index.html", HERE / "bot2" / "index.html", HERE / "webapp2" / "index.html",
-                         HERE / "Bot2.html", HERE / "bot2.html"]
+                         HERE / "Bot2.html", HERE / "bot2.html", HERE / "webapp" / "instaflow.html",
+                         HERE / "webapp" / "Bot2" / "index.html", Path.cwd() / "Bot2" / "index.html",
+                         DATA_DIR / "Bot2" / "index.html"]
 
 
 def bot2_index_file():
-    return next((f for f in BOT2_INDEX_CANDIDATES if f.is_file()), None)
+    f = next((f for f in BOT2_INDEX_CANDIDATES if f.is_file()), None)
+    if f:
+        return f
+    try:  # запасной поиск: любая папка Bot2/bot2 с index.html рядом с bot.py
+        for d in HERE.iterdir():
+            if d.is_dir() and d.name.lower() == "bot2" and (d / "index.html").is_file():
+                return d / "index.html"
+    except Exception:
+        pass
+    return None
+
+
+def bot2_missing_info() -> str:
+    try:
+        names = ", ".join(sorted(x.name + ("/" if x.is_dir() else "") for x in HERE.iterdir()))
+    except Exception:
+        names = "?"
+    return f"папка бота: {HERE}; в ней: {names}"
 
 
 async def web_index2(request: web.Request):
     f = bot2_index_file()
     if not f:
-        return web.Response(status=404, text="Файл Bot2/index.html не найден в репозитории")
+        logging.warning("InstaFlow: index.html не найден. %s", bot2_missing_info())
+        return web.Response(
+            content_type="text/html", charset="utf-8",
+            text="<meta name=viewport content='width=device-width,initial-scale=1'><body style='font:16px sans-serif;padding:24px'>"
+                 "<h3>⚠️ Файл Bot2/index.html не найден на сервере</h3>"
+                 "<p>Папка Bot2 есть в GitHub, но не попала в контейнер. Проверьте Dockerfile: должно быть "
+                 "<code>COPY . .</code> (или <code>COPY Bot2 ./Bot2</code>), затем пересоберите бота.</p>")
     return web.FileResponse(f, headers={"Cache-Control": "no-store"})
 
 
-async def ig_app_card(message: Message):
-    """Отдельное сообщение с кнопкой «Открыть» (Mini App InstaFlow). Старое удаляем, новое закрепляем."""
+IG_MENU_BTN = "📋 Меню"
+IG_APP_BTN = "📲 InstaFlow"
+
+
+def ig_reply_kb(bot_username: str = "") -> ReplyKeyboardMarkup:
+    """Постоянная клавиатура под полем ввода: Mini App + Меню."""
+    row = []
+    if WEBAPP_URL:
+        url = f"{WEBAPP_URL}/instaflow" + (f"?bot={bot_username}" if bot_username else "")
+        row.append(KeyboardButton(text=IG_APP_BTN, web_app=WebAppInfo(url=url)))
+    row.append(KeyboardButton(text=IG_MENU_BTN))
+    return ReplyKeyboardMarkup(keyboard=[[b] for b in row], resize_keyboard=True, is_persistent=True)  # кнопки друг под другом
+
+
+async def ig_app_card(message: Message, inline: bool = False):
+    """Ставит постоянные кнопки под клавиатурой (📲 InstaFlow + 📋 Меню). inline=True — ещё и карточка с «Открыть»."""
     uid = message.from_user.id
-    if not WEBAPP_URL or not bot2_index_file():
-        why = ("WEBAPP_URL не задан на bothost" if not WEBAPP_URL else
-               "файл Bot2/index.html не найден рядом с bot.py (искал: " + ", ".join(str(f.relative_to(HERE)) for f in BOT2_INDEX_CANDIDATES) + ")")
-        logging.warning("InstaFlow Mini App не показан: %s", why)
-        if uid in ADMIN_IDS:
-            await message.answer("⚠️ Кнопка InstaFlow не показана: " + why)
-        return
     bot = message.bot
     try:
         uname = (await bot.me()).username
-        url = f"{WEBAPP_URL}/instaflow?bot={uname}"
-        old = await store_get(f"ig_pin/{uid}")
-        if isinstance(old, int):
-            for fn in (bot.unpin_chat_message, bot.delete_message):
-                try:
-                    if fn is bot.unpin_chat_message:
-                        await fn(chat_id=uid, message_id=old)
-                    else:
-                        await fn(uid, old)
-                except Exception:
-                    pass
-        m = await message.answer(
-            "📲 InstaFlow\nУправляйте автоответчиком, тарифом и профилем в приложении.",
-            reply_markup=_kb([[InlineKeyboardButton(text="Открыть", web_app=WebAppInfo(url=url))]]))
-        await store_set(f"ig_pin/{uid}", m.message_id)
-        try:
-            await bot.pin_chat_message(chat_id=uid, message_id=m.message_id, disable_notification=True)
+    except Exception:
+        uname = ""
+    ok = bool(WEBAPP_URL)
+    if not ok:
+        why = "WEBAPP_URL не задан на bothost"
+        logging.warning("InstaFlow Mini App не показан: %s", why)
+        if uid in ADMIN_IDS:
+            await message.answer("⚠️ Кнопка InstaFlow не показана: " + why)
+    elif not bot2_index_file():
+        logging.warning("InstaFlow: файл Bot2/index.html не найден. %s", bot2_missing_info())
+        if uid in ADMIN_IDS:
+            await message.answer("⚠️ Файл Bot2/index.html не найден на сервере, приложение откроется пустым.\n"
+                                 + bot2_missing_info() + "\nПроверьте Dockerfile: нужен COPY . . (или COPY Bot2 ./Bot2).")
+    try:
+        km = await message.answer("🚀 InstaFlow", reply_markup=ig_reply_kb(uname))
+        try:  # клавиатура остаётся, а служебное сообщение убираем — в чате видны только кнопки внизу
+            await bot.delete_message(message.chat.id, km.message_id)
         except Exception:
-            logging.warning("Не удалось закрепить сообщение InstaFlow у %s", uid)
+            pass
+        if inline and ok:  # карточка с «Открыть»
+            url = f"{WEBAPP_URL}/instaflow?bot={uname}"
+            await message.answer("📲 InstaFlow\nУправляйте автоответчиком, тарифом и профилем в приложении.",
+                                 reply_markup=_kb([[InlineKeyboardButton(text="Открыть", web_app=WebAppInfo(url=url))]]))
     except Exception:
         logging.exception("ig_app_card")
 
 
-
 @dp2.message(Command("app"))
 async def ig_app_cmd(message: Message):
-    await ig_app_card(message)
+    await ig_app_card(message, inline=True)
 
 
 @dp2.message(CommandStart())
@@ -3596,9 +3629,9 @@ async def ig_start(message: Message):
     ig_wait.pop(message.from_user.id, None)
     adm_wait.pop(message.from_user.id, None)
     bg(client_touch(message.from_user))
-    await ig_show_menu(message, message.from_user.id)
     if (message.text or "").startswith("/start"):
-        await ig_app_card(message)  # отдельное сообщение «InstaFlow» с кнопкой «Открыть» + закреп
+        await ig_app_card(message)  # сначала постоянные кнопки под полем ввода (📲 InstaFlow + 📋 Меню)
+    await ig_show_menu(message, message.from_user.id)
 
 
 @dp2.message(Command("cancel"))
@@ -3643,14 +3676,9 @@ def ig_req_instr_kb(uid: int):
 
 IG_REQ_INSTR = (
     "✅ Заявка одобрена!\n\n"
-    "1. Примите приглашение тестера в Facebook: откройте facebook.com/developers/requests (или уведомление Facebook) "
-    "под своим профилем и нажмите «Принять».\n"
-    "2. Аккаунт Instagram должен быть профессиональным (бизнес или автор), привязанным к Странице Facebook, "
-    "с включённым «Разрешить доступ к сообщениям» (подробно: кнопка «📖 Инструкция» ниже).\n"
-    "3. Нажмите «Войти через Instagram» ниже. На экране «Select the business assets» выберите свой бизнес-портфель "
-    "и свой аккаунт Instagram. Рекламные кабинеты (Ad Accounts) не выбирайте. Нажмите Continue, на следующем экране "
-    "оставьте все разрешения включёнными и подтвердите.\n"
-    "4. Вернитесь сюда и нажмите «Готово».")
+    "Нажмите «Войти через Instagram», выберите свой бизнес-портфель и аккаунт Instagram "
+    "(рекламные кабинеты пропустите), нажмите Continue и оставьте все разрешения включёнными. "
+    "Бот сам напишет, когда всё подключится.")
 
 
 @dp2.callback_query(F.data == "g:locked")
@@ -3683,11 +3711,13 @@ async def ig_req_submit(message: Message, login: str, fb: str):
     admin_text = (
         "📝 Заявка на подключение Instagram\n"
         f"Instagram: @{login}\nhttps://instagram.com/{login}\n"
-        f"Facebook: {fb}\n"
+        + (f"Facebook: {fb}\n" if fb else "") +
         f"Telegram: {who} ({u.full_name}), id {u.id}\n\n"
-        "Сначала добавьте человека в Meta: Роли в приложении → Роли → Добавить людей → роль «Тестировщик» "
-        "(по профилю Facebook). Потом нажмите «Подтвердить».")
-    kb = _kb([[_b("✅ Подтвердить", f"g:apr:{uid}"), _b("❌ Отклонить", f"g:rej:{uid}")]])
+        f"1) Нажмите «Подключить @{login}» → Добавить людей → роль «Тестер Instagram» → введите логин {login}.\n"
+        "2) Потом нажмите «Подтвердить».")
+    roles_url = f"https://developers.facebook.com/apps/{IG_APP_ID}/roles/roles/" if IG_APP_ID else "https://developers.facebook.com/apps/"
+    kb = _kb([[_b(f"🔗 Подключить @{login}", url=roles_url)],
+              [_b("✅ Подтвердить", f"g:apr:{uid}"), _b("❌ Отклонить", f"g:rej:{uid}")]])
     sent = 0
     for aid in ADMIN_IDS:
         try:
@@ -4585,6 +4615,10 @@ async def ig_text(message: Message):
     text = (message.text or "").strip()
     sub = await get_sub(uid)
     pro = tier_of(sub) == "pro"
+    if text == IG_MENU_BTN:
+        ig_wait.pop(uid, None)
+        adm_wait.pop(uid, None)
+        return await ig_show_menu(message, uid)
     if uid in adm_wait:
         return await admin_reason_text(message, text)
     if not w:
@@ -4613,15 +4647,8 @@ async def ig_text(message: Message):
         login = text.strip().lstrip("@").split("?")[0].rstrip("/").split("/")[-1]
         if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", login):
             return await message.answer("❌ Логин выглядит неверно. Отправьте его ещё раз. Пример: @myshop")
-        ig_wait[uid] = {"step": "req_fb", "data": {"login": login}}
-        return await message.answer(
-            "Теперь отправьте ссылку на ваш профиль Facebook (или имя и e-mail, на которые зарегистрирован Facebook).\n"
-            "Пример: https://www.facebook.com/ivan.petrov\n\n"
-            "Он нужен, чтобы мы добавили вас тестировщиком приложения. Аккаунт Instagram должен быть привязан к Странице Facebook.")
-    if step == "req_fb":
-        login = w["data"]["login"]
         ig_wait.pop(uid, None)
-        return await ig_req_submit(message, login, text.strip()[:200])
+        return await ig_req_submit(message, login, "")
     if not acc:
         ig_wait.pop(uid, None)
         return await ig_show_menu(message, uid)
