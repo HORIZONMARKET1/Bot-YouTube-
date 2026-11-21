@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Inflow</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0d1220;--panel:#151c30;--panel2:#1b2440;--line:#26304d;--tx:#e9edf8;--mut:#8b95b1;--acc:#6f7dff;--acc2:#4f5de0;--ok:#35c28b;--warn:#f0b24a;--bad:#ef6a6a;--r:16px}
+*{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,"SF Pro Text","Segoe UI",Roboto,sans-serif}
+body{padding-top:env(safe-area-inset-top)}
+svg.i{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+#app{max-width:560px;margin:0 auto;padding:16px 16px calc(92px + env(safe-area-inset-bottom))}
+header{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+.av{width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,var(--acc),#9a6bff);display:grid;place-items:center;font-weight:700;font-size:18px;overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover}
+header .t{flex:1;min-width:0}
+header b{display:block;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header span{color:var(--mut);font-size:13px}
+.badge{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;background:var(--panel2);color:var(--mut);border:1px solid var(--line)}
+.badge.pro{background:rgba(111,125,255,.16);color:#aab3ff;border-color:rgba(111,125,255,.45)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px}
+h2{font-size:20px;letter-spacing:-.01em;margin:4px 0 12px}
+h3{font-size:15px;margin-bottom:4px}
+.mut{color:var(--mut);font-size:13px}
+.hero{background:linear-gradient(160deg,#1c2650,#151c30 70%);border-color:#2c3866}
+.hero .big{font-size:26px;font-weight:700;letter-spacing:-.02em;margin:2px 0 10px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.stat{background:var(--panel2);border-radius:12px;padding:12px}
+.stat b{display:block;font-size:20px}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px 16px;border-radius:12px;font-weight:600;background:var(--acc);color:#fff}
+.btn:active{background:var(--acc2)}
+.btn.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--tx)}
+.btn[disabled]{opacity:.5}
+.row{display:flex;align-items:center;gap:12px;padding:13px 0;border-top:1px solid var(--line);width:100%;text-align:left}
+.row:first-of-type{border-top:0}
+.row .ic{width:40px;height:40px;border-radius:12px;background:var(--panel2);display:grid;place-items:center;color:#aab3ff}
+.row .tx{flex:1;min-width:0}
+.row .tx b{display:block;font-size:15px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}.dot.off{background:var(--mut)}
+.plan{border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px;background:var(--panel)}
+.plan.pro{border-color:var(--acc);background:linear-gradient(170deg,#1b2350,#151c30)}
+.price{font-size:26px;font-weight:700;margin:4px 0 10px}
+.price small{font-size:13px;color:var(--mut);font-weight:500}
+.plan ul{list-style:none;padding:0;margin:0 0 14px;display:grid;gap:8px}
+.plan li{display:flex;gap:10px;align-items:flex-start}
+.plan li svg{width:18px;height:18px;color:var(--ok);margin-top:2px}
+.plan li.no{color:var(--mut)}.plan li.no svg{color:var(--mut)}
+.empty{text-align:center;padding:28px 12px;color:var(--mut)}
+.note{background:rgba(240,178,74,.1);border:1px solid rgba(240,178,74,.35);color:#f3cf8c;border-radius:12px;padding:10px 12px;font-size:13px;margin-bottom:12px}
+nav{position:fixed;left:0;right:0;bottom:0;background:rgba(21,28,48,.96);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:8px 8px calc(8px + env(safe-area-inset-bottom));display:flex;justify-content:center;gap:4px}
+nav .in{display:flex;width:100%;max-width:560px;gap:4px}
+nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 2px;border-radius:12px;color:var(--mut);font-size:11.5px;font-weight:600}
+nav button.on{color:#c4cbff;background:rgba(111,125,255,.14)}
+.toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#fff;color:#111;padding:10px 16px;border-radius:12px;font-size:14px;font-weight:600;z-index:9}
+@media (prefers-reduced-motion:no-preference){.card,.plan{animation:up .25s ease both}@keyframes up{from{opacity:0;transform:translateY(6px)}}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></symbol>
+<symbol id="bolt" viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></symbol>
+<symbol id="wallet" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="3"/><path d="M3 10h18M16 15h2"/><path d="M6 6l9-3v3"/></symbol>
+<symbol id="user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c1-4 4-6 8-6s7 2 8 6"/></symbol>
+<symbol id="ig" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r=".6"/></symbol>
+<symbol id="check" viewBox="0 0 24 24"><path d="M5 12l5 5 9-10"/></symbol>
+<symbol id="x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 015 .5c0 1.7-2.5 2-2.5 3.5M12 17h.01"/></symbol>
+<symbol id="msg" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
+<symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+</defs></svg>
+
+<div id="app"></div>
+<nav><div class="in" id="nav"></div></nav>
+
+<script>
+const tg=window.Telegram&&Telegram.WebApp;
+if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#0d1220');tg.setBackgroundColor('#0d1220')}catch(e){}}
+const $=s=>document.querySelector(s);
+const ic=n=>`<svg class="i"><use href="#${n}"/></svg>`;
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const user=(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user)||{first_name:'Гость',id:0};
+const q=new URLSearchParams(location.search);
+let S={tab:'home',loaded:false,offline:false,me:{plan:'free',until:0,accounts:[],stats:{sent:0,clicks:0},rules:[],bot:q.get('bot')||'',plans:[
+ {id:'intro',name:'Пробный месяц',price:'',days:30},{id:'month',name:'Месяц',price:'',days:30}]}};
+
+async function api(path,opt={}){
+  const r=await fetch('/api/app/'+path,{...opt,headers:{'Content-Type':'application/json','X-Init-Data':tg?tg.initData:'',...(opt.headers||{})}});
+  if(!r.ok)throw new Error(r.status);return r.json();
+}
+async function load(){
+  try{S.me={...S.me,...await api('me')};S.offline=false}catch(e){S.offline=true}
+  S.loaded=true;draw();
+}
+function toast(t){const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.append(e);setTimeout(()=>e.remove(),2200)}
+function toBot(start){
+  const b=(S.me.bot||'').replace('@','');
+  if(!b){toast('Откройте бота и нажмите /menu');return}
+  const url='https://t.me/'+b+(start?'?start='+start:'');
+  tg?tg.openTelegramLink(url):open(url,'_blank');
+}
+const isPro=()=>S.me.plan==='pro'&&S.me.until*1000>Date.now();
+const dleft=()=>Math.max(0,Math.ceil((S.me.until*1000-Date.now())/864e5));
+const fdate=t=>new Date(t*1000).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});
+
+function head(){
+  const ini=esc((user.first_name||'?')[0].toUpperCase());
+  return `<header><div class="av">${user.photo_url?`<img src="${esc(user.photo_url)}" alt="">`:ini}</div>
+  <div class="t"><b>${esc(user.first_name||'')} ${esc(user.last_name||'')}</b><span>${user.username?'@'+esc(user.username):'ID '+user.id}</span></div>
+  <span class="badge ${isPro()?'pro':''}">${isPro()?'Business Pro':'Free'}</span></header>`;
+}
+const warn=()=>S.offline?`<div class="note">Не удалось загрузить данные с сервера. Показан базовый профиль. Потяните вниз и откройте приложение снова.</div>`:'';
+
+function viewHome(){
+  const m=S.me,a=m.accounts[0];
+  return `${head()}${warn()}
+  <div class="card hero"><span class="mut">Подключённый аккаунт</span>
+    <div class="big">${a?'@'+esc(a.username):'Instagram не подключён'}</div>
+    ${a?`<div class="grid"><div class="stat"><b>${m.stats.sent}</b><span class="mut">сообщений</span></div>
+    <div class="stat"><b>${m.stats.clicks}</b><span class="mut">кликов</span></div>
+    <div class="stat"><b>${m.rules.length}</b><span class="mut">сценариев</span></div></div>`
+    :`<button class="btn" data-go="connect">${ic('ig')}Подключить Instagram</button>`}
+  </div>
+  <div class="card"><h3>Быстрые действия</h3>
+    <button class="row" data-go="new"><span class="ic">${ic('plus')}</span><span class="tx"><b>Новая автоматизация</b><span class="mut">Ответ на комментарий или сообщение</span></span>${ic('chev')}</button>
+    <button class="row" data-tab="rules"><span class="ic">${ic('bolt')}</span><span class="tx"><b>Мои автоматизации</b><span class="mut">Включение, статистика</span></span>${ic('chev')}</button>
+    <button class="row" data-go="guide"><span class="ic">${ic('help')}</span><span class="tx"><b>Как подготовить аккаунт</b><span class="mut">Бизнес-профиль и доступ к сообщениям</span></span>${ic('chev')}</button>
+  </div>`;
+}
+function viewRules(){
+  const r=S.me.rules;
+  return `<h2>Автоматизации</h2>${warn()}
+  ${r.length?`<div class="card">${r.map(x=>`<div class="row"><span class="ic">${ic('msg')}</span><span class="tx"><b>«${esc(x.title)}»</b><span class="mut">Отправлено: ${x.sent||0}</span></span><span class="dot ${x.active?'':'off'}" title="${x.active?'Включено':'Выключено'}"></span></div>`).join('')}</div>`
+  :`<div class="card empty">Пока нет ни одной автоматизации.<br>Создайте первую: бот ответит на комментарий и пришлёт сообщение в Direct.</div>`}
+  <button class="btn" data-go="new">${ic('plus')}Новая автоматизация</button>`;
+}
+function plan(p){
+  const pro=p==='pro';
+  const f=(t,ok=true)=>`<li class="${ok?'':'no'}">${ic(ok?'check':'x')}<span>${t}</span></li>`;
+  const pi=S.me.plans.find(x=>x.id==='intro'),pm=S.me.plans.find(x=>x.id==='month');
+  return `<div class="plan ${pro?'pro':''}"><h3>${pro?'Business Pro':'Free'}</h3>
+  <div class="price">${pro?(pm&&pm.price?esc(pm.price):'—')+' <small>в месяц</small>':'0 <small>3 дня</small>'}</div>
+  <ul>${f('Ответ под комментарием')}${f('1 пост, 1 аккаунт')}
+  ${f('Сообщение в Direct и кнопки',pro)}${f('Автоответчик, каталог, статистика',pro)}${f('До 5 аккаунтов Instagram',pro)}</ul>
+  ${pro?(isPro()?`<div class="mut">Активен до ${fdate(S.me.until)}, осталось ${dleft()} дн.</div><button class="btn ghost" style="margin-top:10px" data-go="tariff">Продлить</button>`
+   :`<button class="btn" data-go="tariff">${ic('wallet')}Подключить Business Pro</button>${pi&&pi.price?`<div class="mut" style="margin-top:8px;text-align:center">Первый месяц: ${esc(pi.price)}</div>`:''}`)
+  :`<div class="mut">${isPro()?'Вы на тарифе Pro':'Ваш текущий тариф'}</div>`}</div>`;
+}
+function viewMoney(){
+  return `<h2>Монетизация</h2>${warn()}${plan('pro')}${plan('free')}
+  <div class="card"><h3>Оплата</h3><p class="mut">Оплатите тариф переводом и отправьте чек боту. Доступ откроется после подтверждения.</p>
+  <button class="btn ghost" style="margin-top:12px" data-go="tariff">Открыть оплату в боте</button></div>`;
+}
+function viewProfile(){
+  const m=S.me;
+  return `${head()}${warn()}
+  <div class="card"><h3>Аккаунты Instagram</h3>
+  ${m.accounts.length?m.accounts.map(a=>`<div class="row"><span class="ic">${ic('ig')}</span><span class="tx"><b>@${esc(a.username)}</b><span class="mut">Подключён</span></span><span class="dot"></span></div>`).join('')
+  :`<div class="empty">Аккаунт не подключён</div><button class="btn" data-go="connect">${ic('ig')}Подключить Instagram</button>`}</div>
+  <div class="card"><h3>Тариф</h3><div class="mut">${isPro()?'Business Pro до '+fdate(m.until):'Free'}</div>
+  <button class="btn ghost" style="margin-top:10px" data-tab="money">${ic('wallet')}Управлять тарифом</button></div>
+  <div class="card"><div class="row"><span class="ic">${ic('user')}</span><span class="tx"><b>Telegram ID</b><span class="mut">${user.id||'—'}</span></span></div>
+  <button class="row" data-go="support"><span class="ic">${ic('help')}</span><span class="tx"><b>Поддержка</b></span>${ic('chev')}</button></div>`;
+}
+const TABS=[['home','Главная','home',viewHome],['rules','Сценарии','bolt',viewRules],['money','Тариф','wallet',viewMoney],['me','Профиль','user',viewProfile]];
+function draw(){
+  const t=TABS.find(x=>x[0]===S.tab)||TABS[0];
+  $('#app').innerHTML=t[3]();
+  $('#nav').innerHTML=TABS.map(x=>`<button class="${x[0]===S.tab?'on':''}" data-tab="${x[0]}" aria-label="${x[1]}">${ic(x[2])}${x[1]}</button>`).join('');
+}
+const GO={connect:()=>toBot('connect'),new:()=>toBot('new'),guide:()=>toBot('guide'),tariff:()=>toBot('tariff'),support:()=>toBot('')};
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-tab],[data-go]');if(!b)return;
+  if(b.dataset.tab){S.tab=b.dataset.tab;draw();scrollTo(0,0);tg&&tg.HapticFeedback&&tg.HapticFeedback.selectionChanged()}
+  else GO[b.dataset.go]&&GO[b.dataset.go]();
+});
+draw();load();
+</script>
+</body>
+</html>
