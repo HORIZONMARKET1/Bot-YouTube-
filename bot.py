@@ -3098,6 +3098,38 @@ async def privacy_page(request: web.Request):
     return web.Response(text=_privacy_html(), content_type="text/html", charset="utf-8")
 
 
+def _terms_html() -> str:
+    contact = (PRIVACY_EMAIL + " / " if PRIVACY_EMAIL else "") + f"Telegram {SUPPORT_USER}"
+    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{PRIVACY_NAME}: Пользовательское соглашение</title>
+<style>body{{font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:760px;margin:0 auto;padding:24px;line-height:1.55;color:#222}}
+h1{{font-size:26px}}h2{{font-size:19px;margin-top:28px}}hr{{margin:36px 0;border:0;border-top:1px solid #ddd}}</style></head><body>
+<h1>Пользовательское соглашение / Terms of Service</h1>
+<p>Дата обновления: 21.11.2026. Используя Telegram-бот «{PRIVACY_NAME}» (Сервис), вы принимаете эти условия.</p>
+<h2>1. Что делает Сервис</h2>
+<p>Сервис автоматизирует ответы на комментарии и сообщения в вашем Instagram-аккаунте по правилам, которые вы настроили сами.</p>
+<h2>2. Ваши обязанности</h2>
+<p>Вы подключаете только свой аккаунт или аккаунт, которым вправе управлять. Вы соблюдаете правила Instagram и Meta, не рассылаете спам и запрещённый контент и отвечаете за содержимое своих автоматических сообщений.</p>
+<h2>3. Тарифы и оплата</h2>
+<p>Часть функций платная. Условия и стоимость показаны в боте в разделе «Тарифы».</p>
+<h2>4. Ограничение ответственности</h2>
+<p>Сервис предоставляется «как есть». Мы не отвечаем за ограничения аккаунта со стороны Instagram и перебои в работе API Meta.</p>
+<h2>5. Отключение</h2>
+<p>Вы можете отключить Instagram в любой момент. Мы вправе приостановить доступ при нарушении этих условий. Обработка данных описана в <a href="/privacy">политике конфиденциальности</a>.</p>
+<h2>6. Контакты</h2>
+<p>{contact}</p>
+<hr>
+<h1>Terms of Service (English)</h1>
+<p>Last updated: 2026-11-21. By using the Telegram bot "{PRIVACY_NAME}" (the Service) you accept these terms.</p>
+<p>The Service automates replies to comments and messages on your Instagram account using rules you configure. You may connect only accounts you are authorized to manage, must follow Instagram and Meta policies, and are responsible for the content of your automated messages. Some features are paid; prices are shown in the bot. The Service is provided "as is" and we are not liable for Instagram account restrictions or Meta API outages. You can disconnect at any time; we may suspend access for violations. Data handling is described in our <a href="/privacy">Privacy Policy</a>. Contact: {contact}</p>
+</body></html>"""
+
+
+async def terms_page(request: web.Request):
+    return web.Response(text=_terms_html(), content_type="text/html", charset="utf-8")
+
+
+
 async def ig_delete_info(request: web.Request):
     code = request.query.get("code", "")
     if code:
@@ -3173,6 +3205,7 @@ def ig_register_routes(app: web.Application):
     app.router.add_post("/ig/webhook", ig_webhook_post)
     app.router.add_get("/ig/oauth", ig_oauth_cb)
     app.router.add_get("/privacy", privacy_page)
+    app.router.add_get("/terms", terms_page)
     app.router.add_get("/ig/delete-info", ig_delete_info)
     app.router.add_post("/ig/deauth", ig_deauth)
     app.router.add_post("/ig/delete", ig_delete_cb)
