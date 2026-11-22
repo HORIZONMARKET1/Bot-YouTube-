@@ -3674,21 +3674,45 @@ def ig_login_allowed(uid: int) -> bool:
     return _ig_gate["open"] or uid in _ig_gate["ok"] or uid in ADMIN_IDS
 
 
+IG_INVITE_URL = (os.getenv("IG_INVITE_URL") or "https://www.instagram.com/accounts/manage_access/").strip()
+
+
+def ig_guide_btn(kind: str, text: str = "📖 Инструкция"):
+    """Инструкция внутри мини-приложения (если файл Bot2/index.html есть), иначе обычное сообщение с текстом."""
+    if WEBAPP_URL and bot2_index_file():
+        return InlineKeyboardButton(text=text, web_app=WebAppInfo(url=f"{WEBAPP_URL}/instaflow?guide={kind}"))
+    return _b(text, "g:guide")
+
+
 def ig_req_instr_kb(uid: int):
+    """Шаг 1 после подтверждения админом: Инструкция · Разрешить · Готово."""
+    return _kb([[ig_guide_btn("invite")],
+                [InlineKeyboardButton(text="✅ Разрешить", url=IG_INVITE_URL)],
+                [_b("☑️ Готово", "g:ok1")]])
+
+
+def ig_connect_kb(uid: int):
+    """Шаг 2: Подключить Instagram · Инструкция."""
     rows = []
     url = ig_oauth_url(uid)
     if url:
-        rows.append([_b("📲 Войти через Instagram", url=url)])
-    rows.append([_b("📖 Инструкция по настройке аккаунта", "g:guide")])
-    rows.append([_b("✅ Готово", "g:ok")])
+        rows.append([InlineKeyboardButton(text="🔗 Подключить Instagram", url=url)])
+    rows.append([ig_guide_btn("connect")])
     return _kb(rows)
 
 
 IG_REQ_INSTR = (
     "✅ Заявка одобрена!\n\n"
-    "Нажмите «Войти через Instagram», выберите свой бизнес-портфель и аккаунт Instagram "
-    "(рекламные кабинеты пропустите), нажмите Continue и оставьте все разрешения включёнными. "
-    "Бот сам напишет, когда всё подключится.")
+    "Мы отправили приглашение на ваш аккаунт Instagram. Для подключения аккаунта к боту нужно ваше разрешение.\n\n"
+    "Нажмите «Разрешить», войдите в свой аккаунт Instagram и примите приглашение.\n"
+    "Когда на экране браузера появится сообщение об успешном принятии, закройте окно и нажмите «Готово».\n\n"
+    "⚠️ Обязательно прочтите инструкцию: кнопка «Инструкция».")
+
+IG_REQ_STEP2 = (
+    "👍 Приглашение принято.\n\n"
+    "Теперь подключите Instagram к боту: нажмите «Подключить Instagram», выберите свой бизнес-портфель и аккаунт, "
+    "нажмите «Продолжить» и оставьте все разрешения включёнными.\n"
+    "Если что-то непонятно, откройте «Инструкцию».")
 
 
 @dp2.callback_query(F.data == "g:locked")
@@ -3775,6 +3799,17 @@ async def ig_req_decide(call: CallbackQuery):
             await call.bot.send_message(uid, "❌ Заявка отклонена. Если это ошибка, напишите администратору.")
         except Exception:
             pass
+
+
+@dp2.callback_query(F.data == "g:ok1")
+async def ig_req_accepted(call: CallbackQuery):
+    uid = call.from_user.id
+    await call.answer()
+    try:
+        await call.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await call.message.answer(IG_REQ_STEP2, reply_markup=ig_connect_kb(uid))
 
 
 @dp2.callback_query(F.data == "g:ok")
