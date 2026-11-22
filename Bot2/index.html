@@ -548,7 +548,11 @@ setInterval(()=>{
 
 /* ---------- отрисовка ---------- */
 const TABS=[['home','Главная','home'],['rules','Сценарии','bolt'],['raffle','Розыгрыш','gift'],['plan','Тариф','wallet'],['me','Профиль','user']];
-function draw(){
+function showErr(e){try{const m=(e&&(e.stack||e.message))||String(e);$('#app').innerHTML='<div class="card" style="white-space:pre-wrap;word-break:break-all;font-size:12px"><b>Ошибка приложения</b>\n'+esc(String(m).slice(0,600))+'</div>'}catch(_){}}
+window.addEventListener('error',ev=>showErr(ev.error||ev.message));
+window.addEventListener('unhandledrejection',ev=>showErr(ev.reason));
+function draw(){try{_draw()}catch(e){showErr(e);try{drawNav()}catch(_){}}}
+function _draw(){
   const a=$('#app');
   if(!S.auth){a.innerHTML=authWarn();drawNav();return}
   if(!S.me){a.innerHTML=S.loaded?'<div class="card empty">Не удалось загрузить данные. Откройте приложение снова.</div>':'<div class="empty">Загрузка…</div>';drawNav();return}
@@ -641,8 +645,8 @@ async function watchPay(){
 /* ---------- старт ---------- */
 (async()=>{
   draw();
-  await loadMe();
-  rfLoad();
+  try{await loadMe()}catch(e){showErr(e)}
+  try{rfLoad()}catch(e){}
   setInterval(()=>{if(!document.hidden)rfLoad()},12000);
   if(q.get('rf')){rfOpen(q.get('rf'),true)}
   if(S.me&&S.me.pending&&S.me.pending.status==='review'){S.P=null}
