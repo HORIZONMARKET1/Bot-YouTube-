@@ -3,16 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<title>Inflow</title>
+<title>InstaFlow</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{--bg:#0d1220;--panel:#151c30;--panel2:#1b2440;--line:#26304d;--tx:#e9edf8;--mut:#8b95b1;--acc:#6f7dff;--acc2:#4f5de0;--ok:#35c28b;--warn:#f0b24a;--bad:#ef6a6a;--r:16px}
 *{box-sizing:border-box;margin:0;-webkit-tap-highlight-color:transparent}
-html,body{height:100%;background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,"SF Pro Text","Segoe UI",Roboto,sans-serif}
+html,body{min-height:100%;background:var(--bg);color:var(--tx);font:15px/1.45 -apple-system,"SF Pro Text","Segoe UI",Roboto,sans-serif}
 body{padding-top:env(safe-area-inset-top)}
 svg.i{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:none}
 button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
-button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+input,textarea,select{font:inherit;color:var(--tx);background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px 14px;width:100%;outline:none}
+input:focus,textarea:focus{border-color:var(--acc)}
+textarea{min-height:92px;resize:vertical}
+label.l{display:block;font-size:13px;color:var(--mut);margin:12px 0 6px}
 #app{max-width:560px;margin:0 auto;padding:16px 16px calc(92px + env(safe-area-inset-bottom))}
 header{display:flex;align-items:center;gap:12px;margin-bottom:18px}
 .av{width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,var(--acc),#9a6bff);display:grid;place-items:center;font-weight:700;font-size:18px;overflow:hidden}
@@ -28,18 +31,21 @@ h3{font-size:15px;margin-bottom:4px}
 .mut{color:var(--mut);font-size:13px}
 .hero{background:linear-gradient(160deg,#1c2650,#151c30 70%);border-color:#2c3866}
 .hero .big{font-size:26px;font-weight:700;letter-spacing:-.02em;margin:2px 0 10px}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.grid.g2{grid-template-columns:repeat(2,1fr)}
 .stat{background:var(--panel2);border-radius:12px;padding:12px}
 .stat b{display:block;font-size:20px}
-.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px 16px;border-radius:12px;font-weight:600;background:var(--acc);color:#fff}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:13px 16px;border-radius:12px;font-weight:600;background:var(--acc);color:#fff;margin-top:8px}
 .btn:active{background:var(--acc2)}
 .btn.ghost{background:var(--panel2);border:1px solid var(--line);color:var(--tx)}
-.btn[disabled]{opacity:.5}
+.btn.bad{background:rgba(239,106,106,.14);color:#ff9d9d;border:1px solid rgba(239,106,106,.4)}
+.btn.sm{width:auto;padding:8px 14px;margin:0;font-size:14px}
+.btn[disabled]{opacity:.5;pointer-events:none}
 .row{display:flex;align-items:center;gap:12px;padding:13px 0;border-top:1px solid var(--line);width:100%;text-align:left}
 .row:first-of-type{border-top:0}
-.row .ic{width:40px;height:40px;border-radius:12px;background:var(--panel2);display:grid;place-items:center;color:#aab3ff}
+.row .ic{width:40px;height:40px;border-radius:12px;background:var(--panel2);display:grid;place-items:center;color:#aab3ff;flex:none}
 .row .tx{flex:1;min-width:0}
 .row .tx b{display:block;font-size:15px}
+.row .tx span{display:block}
 .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}.dot.off{background:var(--mut)}
 .plan{border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px;background:var(--panel)}
 .plan.pro{border-color:var(--acc);background:linear-gradient(170deg,#1b2350,#151c30)}
@@ -51,11 +57,47 @@ h3{font-size:15px;margin-bottom:4px}
 .plan li.no{color:var(--mut)}.plan li.no svg{color:var(--mut)}
 .empty{text-align:center;padding:28px 12px;color:var(--mut)}
 .note{background:rgba(240,178,74,.1);border:1px solid rgba(240,178,74,.35);color:#f3cf8c;border-radius:12px;padding:10px 12px;font-size:13px;margin-bottom:12px}
-nav{position:fixed;left:0;right:0;bottom:0;background:rgba(21,28,48,.96);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:8px 8px calc(8px + env(safe-area-inset-bottom));display:flex;justify-content:center;gap:4px}
-nav .in{display:flex;width:100%;max-width:560px;gap:4px}
-nav button{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 2px;border-radius:12px;color:var(--mut);font-size:11.5px;font-weight:600}
+.note.ok{background:rgba(53,194,139,.1);border-color:rgba(53,194,139,.4);color:#8be3bd}
+nav{position:fixed;left:0;right:0;bottom:0;background:rgba(21,28,48,.96);backdrop-filter:blur(14px);border-top:1px solid var(--line);padding:8px 8px calc(8px + env(safe-area-inset-bottom));display:flex;justify-content:center;z-index:5}
+nav .in{display:flex;width:100%;max-width:560px;gap:2px}
+nav button{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:12px;color:var(--mut);font-size:11px;font-weight:600}
 nav button.on{color:#c4cbff;background:rgba(111,125,255,.14)}
-.toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#fff;color:#111;padding:10px 16px;border-radius:12px;font-size:14px;font-weight:600;z-index:9}
+nav button .pip{position:absolute;top:5px;right:calc(50% - 18px);width:9px;height:9px;border-radius:50%;background:var(--bad);box-shadow:0 0 0 2px var(--panel)}
+.toast{position:fixed;left:50%;bottom:calc(96px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#fff;color:#111;padding:10px 16px;border-radius:12px;font-size:14px;font-weight:600;z-index:99;max-width:90%;text-align:center}
+.sw{position:relative;width:46px;height:28px;border-radius:999px;background:var(--line);flex:none;transition:.2s}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:.2s}
+.sw.on{background:var(--ok)}.sw.on::after{left:21px}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button{padding:8px 12px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:13px;font-weight:600;color:var(--mut)}
+.seg button.on{background:rgba(111,125,255,.2);border-color:var(--acc);color:#dfe3ff}
+.pick{display:flex;gap:12px;align-items:center;padding:10px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--panel2);width:100%;text-align:left}
+.pick.on{border-color:var(--acc);background:rgba(111,125,255,.14)}
+.pick img{width:44px;height:44px;border-radius:8px;object-fit:cover;flex:none}
+.lock{font-size:12px;color:var(--warn);margin-left:6px}
+.back{display:inline-flex;gap:6px;align-items:center;color:#aab3ff;font-weight:600;margin-bottom:10px;padding:4px 0}
+.back svg{transform:rotate(180deg);width:18px;height:18px}
+.bx{border:1px dashed var(--line);border-radius:12px;padding:10px;margin-top:8px}
+.copy{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;background:var(--panel2);margin-top:8px}
+.copy b{font-size:17px;letter-spacing:.04em}
+.spark{width:100%;height:90px}
+.chips span{display:inline-block;margin:3px 4px 3px 0;padding:3px 9px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);font-size:12px}
+.pimg{width:52px;height:52px;border-radius:10px;object-fit:cover;background:var(--panel2);flex:none}
+/* розыгрыш */
+.rf-img{width:100%;border-radius:12px;display:block;margin-bottom:12px;max-height:240px;object-fit:cover}
+.chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600;background:var(--panel2);border:1px solid var(--line);color:var(--mut)}
+.chip.open{color:#7be0b5;border-color:rgba(53,194,139,.5);background:rgba(53,194,139,.1)}
+.chip.live{color:#ff9d9d;border-color:rgba(239,106,106,.5);background:rgba(239,106,106,.12)}
+.rf-prize{display:flex;gap:8px;padding:5px 0}
+.tk{display:inline-block;margin:3px 6px 3px 0;padding:5px 10px;border-radius:10px;background:var(--panel2);border:1px solid var(--line);font-size:13px}
+.tk b{letter-spacing:.08em;color:#c4cbff}
+.stage{background:#0a0f1e;border:1px solid var(--line);border-radius:var(--r);padding:10px;margin-bottom:12px}
+.stage canvas{width:100%;display:block;border-radius:10px}
+#plst{text-align:center;min-height:38px;font-size:14px;margin-bottom:6px}
+#plst b{color:#c4cbff}
+#wn{position:fixed;left:12px;right:12px;top:18%;z-index:20;text-align:center;padding:20px 14px;border-radius:20px;background:linear-gradient(160deg,#2a3680,#151c30);border:1px solid var(--acc);box-shadow:0 20px 60px rgba(0,0,0,.6);animation:pop .35s ease both}
+#wn .m{font-size:46px}#wn .n{font-size:22px;font-weight:700;margin:4px 0}#wn .s{color:#c4cbff;font-size:15px}
+@keyframes pop{from{transform:scale(.7);opacity:0}}
+.pod .row{border-top:1px solid var(--line)}
 @media (prefers-reduced-motion:no-preference){.card,.plan{animation:up .25s ease both}@keyframes up{from{opacity:0;transform:translateY(6px)}}}
 </style>
 </head>
@@ -72,6 +114,14 @@ nav button.on{color:#c4cbff;background:rgba(111,125,255,.14)}
 <symbol id="help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 015 .5c0 1.7-2.5 2-2.5 3.5M12 17h.01"/></symbol>
 <symbol id="msg" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></symbol>
 <symbol id="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+<symbol id="gift" viewBox="0 0 24 24"><rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9M12 8v13"/><path d="M12 8C10 4 6 4.5 6.5 6.5 7 8 12 8 12 8zm0 0c2-4 6-3.5 5.5-1.5C17 8 12 8 12 8z"/></symbol>
+<symbol id="chart" viewBox="0 0 24 24"><path d="M4 20V4M4 20h16"/><path d="M8 15l4-4 3 3 5-6"/></symbol>
+<symbol id="bag" viewBox="0 0 24 24"><path d="M5 8h14l-1 12H6z"/><path d="M9 8a3 3 0 016 0"/></symbol>
+<symbol id="auto" viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/></symbol>
+<symbol id="users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.2-5 6.5-5s5.7 1.5 6.5 5"/><path d="M16 5a3.5 3.5 0 010 6M18 15c2 .6 3 2 3.5 5"/></symbol>
+<symbol id="trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></symbol>
+<symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/></symbol>
+<symbol id="link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></symbol>
 </defs></svg>
 
 <div id="app"></div>
@@ -83,102 +133,521 @@ if(tg){tg.ready();tg.expand();try{tg.setHeaderColor('#0d1220');tg.setBackgroundC
 const $=s=>document.querySelector(s);
 const ic=n=>`<svg class="i"><use href="#${n}"/></svg>`;
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const user=(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user)||{first_name:'Гость',id:0};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const q=new URLSearchParams(location.search);
-let S={tab:'home',loaded:false,offline:false,me:{plan:'free',until:0,accounts:[],stats:{sent:0,clicks:0},rules:[],bot:q.get('bot')||'',plans:[
- {id:'intro',name:'Пробный месяц',price:'',days:30},{id:'month',name:'Месяц',price:'',days:30}]}};
+const user=(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user)||{first_name:'',id:0};
 
-async function api(path,opt={}){
-  const r=await fetch('/api/app/'+path,{...opt,headers:{'Content-Type':'application/json','X-Init-Data':tg?tg.initData:'',...(opt.headers||{})}});
-  if(!r.ok)throw new Error(r.status);return r.json();
+/* ---------- состояние ---------- */
+const S={tab:'home',stack:[],me:null,auth:true,loaded:false,F:{},P:null,stats:null,rules:null,cat:null,dm:null,media:null,busy:false};
+const RF={list:[],loaded:false,open:null,data:null,timing:{batch_ms:1500,fall_ms:3400,hl_ms:3200,win_ms:5500,lead_ms:3000},
+ mults:[100,15,10,5,2,5,10,15,100],rows:8,skew:0,run:0,cv:null,raf:null,st:null,playing:false,join:null,auto:null,shown:[]};
+
+function rhead(){const h={'X-Init-Data':tg?tg.initData:''};if(q.get('u')){h['X-Rf-U']=q.get('u');h['X-Rf-S']=q.get('s')||''}return h}
+function toast(t){const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.append(e);setTimeout(()=>e.remove(),2600)}
+async function api(path,o={}){
+  const opt={method:o.method||(o.body||o.form?'POST':'GET'),headers:rhead()};
+  if(o.form)opt.body=o.form;else if(o.body){opt.body=JSON.stringify(o.body);opt.headers['Content-Type']='application/json'}
+  let r,j={};
+  try{r=await fetch('/api/'+path,opt)}catch(e){toast('Нет связи с сервером');return{ok:false}}
+  try{j=await r.json()}catch(e){j={ok:false}}
+  if(r.status===401){S.auth=false;draw();return{ok:false,error:'auth'}}
+  if(j.ok===false&&j.msg&&!o.quiet){toast(j.msg);if(j.error==='pro'){S.stack=[];S.tab='plan';draw()}}
+  return j;
 }
-async function load(){
-  try{S.me={...S.me,...await api('me')};S.offline=false}catch(e){S.offline=true}
-  S.loaded=true;draw();
-}
-function toast(t){const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.append(e);setTimeout(()=>e.remove(),2200)}
-function toBot(start){
-  const b=(S.me.bot||'').replace('@','');
-  if(!b){toast('Откройте бота и нажмите /menu');return}
-  const url='https://t.me/'+b+(start?'?start='+start:'');
-  tg?tg.openTelegramLink(url):open(url,'_blank');
-}
-const isPro=()=>S.me.plan==='pro'&&S.me.until*1000>Date.now();
-const dleft=()=>Math.max(0,Math.ceil((S.me.until*1000-Date.now())/864e5));
+const isPro=()=>S.me&&S.me.tier==='pro';
 const fdate=t=>new Date(t*1000).toLocaleDateString('ru-RU',{day:'numeric',month:'long',year:'numeric'});
+const fstart=t=>new Date(t*1000).toLocaleString('ru-RU',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
+const dleft=t=>Math.max(0,Math.ceil((t*1000-Date.now())/864e5));
+const openExt=u=>tg?tg.openLink(u):open(u,'_blank');
+const openTg=u=>tg?tg.openTelegramLink(u):open(u,'_blank');
+function copy(t){try{navigator.clipboard.writeText(t).then(()=>toast('Скопировано'),fb)}catch(e){fb()}function fb(){const a=document.createElement('textarea');a.value=t;document.body.append(a);a.select();try{document.execCommand('copy');toast('Скопировано')}catch(e){}a.remove()}}
+function toJpeg(file,max=1280){return new Promise((res,rej)=>{const im=new Image(),u=URL.createObjectURL(file);im.onload=()=>{const k=Math.min(1,max/Math.max(im.width,im.height)),c=document.createElement('canvas');c.width=Math.round(im.width*k);c.height=Math.round(im.height*k);c.getContext('2d').drawImage(im,0,0,c.width,c.height);c.toBlob(b=>{URL.revokeObjectURL(u);b?res(b):rej()},'image/jpeg',.85)};im.onerror=rej;im.src=u})}
 
+async function loadMe(){const j=await api('app/me',{quiet:true});if(j.ok){S.me=j;S.auth=true}S.loaded=true;if(!S.stack.length&&!RF.open)draw();return j}
+
+/* ---------- навигация ---------- */
+function go(n,p){S.stack.push({n,p});draw();scrollTo(0,0)}
+function back(){if(RF.open&&!S.stack.length){rfClose();return}S.stack.pop();draw();scrollTo(0,0)}
+function tab(t){if(t!=='raffle')rfStop();S.tab=t;S.stack=[];if(t!=='raffle')RF.open=null;if(t==='rules'&&S.rules===null&&S.me&&S.me.accounts.length)loadRules();draw();scrollTo(0,0);tg&&tg.HapticFeedback&&tg.HapticFeedback.selectionChanged()}
+const backBtn=()=>`<button class="back" data-a="back">${ic('chev')}Назад</button>`;
+function lockTag(){return isPro()?'':'<span class="lock">🔒 Pro</span>'}
+function needPro(){toast('Доступно на Business Pro');S.stack=[];S.tab='plan';draw()}
+
+/* ---------- шапка ---------- */
 function head(){
-  const ini=esc((user.first_name||'?')[0].toUpperCase());
+  const m=S.me||{},nm=(m.name||user.first_name||'')+'',ini=esc((nm||'?')[0].toUpperCase());
   return `<header><div class="av">${user.photo_url?`<img src="${esc(user.photo_url)}" alt="">`:ini}</div>
-  <div class="t"><b>${esc(user.first_name||'')} ${esc(user.last_name||'')}</b><span>${user.username?'@'+esc(user.username):'ID '+user.id}</span></div>
+  <div class="t"><b>${esc(nm)||'InstaFlow'}</b><span>${m.username?'@'+esc(m.username):'ID '+(m.uid||user.id||'—')}</span></div>
   <span class="badge ${isPro()?'pro':''}">${isPro()?'Business Pro':'Free'}</span></header>`;
 }
-const warn=()=>S.offline?`<div class="note">Не удалось загрузить данные с сервера. Показан базовый профиль. Потяните вниз и откройте приложение снова.</div>`:'';
+const authWarn=()=>`<div class="card empty">Откройте приложение кнопкой из бота (<b>/start</b> → «📲 InstaFlow»), чтобы войти в свой аккаунт.</div>`;
+const curAcc=()=>S.me&&S.me.accounts.find(a=>a.selected)||(S.me&&S.me.accounts[0])||null;
 
+/* ---------- главная ---------- */
 function viewHome(){
-  const m=S.me,a=m.accounts[0];
-  return `${head()}${warn()}
+  const m=S.me,a=curAcc(),lv=RF.list.find(r=>r.status==='live');
+  const item=(act,icon,t,s,pro)=>`<button class="row" data-a="${act}"><span class="ic">${ic(icon)}</span><span class="tx"><b>${t}${pro?lockTag():''}</b><span class="mut">${s}</span></span>${ic('chev')}</button>`;
+  return `${head()}
+  ${lv?`<button class="card hero" style="width:100%;text-align:left" data-rf="${esc(lv.id)}"><span class="chip live">● В эфире</span><div class="big" style="font-size:20px;margin-top:8px">${esc(lv.title)}</div><span class="mut">Нажмите, чтобы смотреть розыгрыш</span></button>`:''}
   <div class="card hero"><span class="mut">Подключённый аккаунт</span>
     <div class="big">${a?'@'+esc(a.username):'Instagram не подключён'}</div>
-    ${a?`<div class="grid"><div class="stat"><b>${m.stats.sent}</b><span class="mut">сообщений</span></div>
-    <div class="stat"><b>${m.stats.clicks}</b><span class="mut">кликов</span></div>
-    <div class="stat"><b>${m.rules.length}</b><span class="mut">сценариев</span></div></div>`
-    :`<button class="btn" data-go="connect">${ic('ig')}Подключить Instagram</button>`}
+    ${a?`<div class="grid g2"><div class="stat"><b>${m.accounts.length}/${m.max_accounts}</b><span class="mut">аккаунтов</span></div><div class="stat"><b>${isPro()?'Pro':'Free'}</b><span class="mut">${isPro()?'до '+fdate(m.until):(m.free_until?'до '+fdate(m.free_until):'тариф')}</span></div></div>`
+    :`<button class="btn" data-a="connect">${ic('ig')}Подключить Instagram</button>`}
   </div>
   <div class="card"><h3>Быстрые действия</h3>
-    <button class="row" data-go="new"><span class="ic">${ic('plus')}</span><span class="tx"><b>Новая автоматизация</b><span class="mut">Ответ на комментарий или сообщение</span></span>${ic('chev')}</button>
-    <button class="row" data-tab="rules"><span class="ic">${ic('bolt')}</span><span class="tx"><b>Мои автоматизации</b><span class="mut">Включение, статистика</span></span>${ic('chev')}</button>
-    <button class="row" data-go="guide"><span class="ic">${ic('help')}</span><span class="tx"><b>Как подготовить аккаунт</b><span class="mut">Бизнес-профиль и доступ к сообщениям</span></span>${ic('chev')}</button>
+    ${item('newrule','plus','Новая автоматизация','Комментарии, Direct, сторис, меню')}
+    ${item('rules','bolt','Мои автоматизации','Включение и статистика')}
+    ${item('dm','auto','Автоответчик в Direct','Приветствие и ответ по умолчанию',1)}
+    ${item('catalog','bag','Каталог товаров','Карусель с фото и кнопкой «Купить»',1)}
+    ${item('stats','chart','Статистика и подписчики','Сообщения, клики, динамика',1)}
+    ${item('accounts','users','Аккаунты Instagram','Добавить, выбрать, отключить')}
+    ${item('guide','help','Как подготовить аккаунт','Бизнес-профиль и доступ к сообщениям')}
   </div>`;
 }
-function viewRules(){
-  const r=S.me.rules;
-  return `<h2>Автоматизации</h2>${warn()}
-  ${r.length?`<div class="card">${r.map(x=>`<div class="row"><span class="ic">${ic('msg')}</span><span class="tx"><b>«${esc(x.title)}»</b><span class="mut">Отправлено: ${x.sent||0}</span></span><span class="dot ${x.active?'':'off'}" title="${x.active?'Включено':'Выключено'}"></span></div>`).join('')}</div>`
-  :`<div class="card empty">Пока нет ни одной автоматизации.<br>Создайте первую: бот ответит на комментарий и пришлёт сообщение в Direct.</div>`}
-  <button class="btn" data-go="new">${ic('plus')}Новая автоматизация</button>`;
+
+/* ---------- подключение ---------- */
+function viewConnect(){
+  const m=S.me,lg=m.login,full=m.accounts.length>=m.max_accounts;
+  let body='';
+  if(full)body=`<div class="card empty">${isPro()?'Достигнут лимит аккаунтов.':'На Free доступен один аккаунт.'}<button class="btn" data-a="plan">${ic('wallet')}Тарифы</button></div>`;
+  else if(lg.allowed)body=`<div class="card"><h3>Войти через Instagram</h3><p class="mut" style="margin:6px 0 4px">Откроется Instagram. Войдите, выберите бизнес-портфель и аккаунт (рекламные кабинеты пропустите), нажмите Continue и оставьте все разрешения включёнными. Потом вернитесь сюда.</p>
+    ${lg.url?`<button class="btn" data-a="oauth">${ic('ig')}Войти через Instagram</button>`:'<div class="note" style="margin-top:10px">Вход не настроен на сервере (IG_APP_ID, IG_APP_SECRET, WEBAPP_URL).</div>'}
+    <button class="btn ghost" data-a="refresh">Я уже вошёл(а) — обновить</button></div>`;
+  else if(lg.request==='pending')body=`<div class="card"><h3>⏳ Заявка отправлена</h3><p class="mut" style="margin-top:6px">Это займёт 5–10 минут. Как только админ подтвердит, здесь появится кнопка входа.</p><button class="btn ghost" data-a="refresh">Обновить</button></div>`;
+  else body=`<div class="card"><h3>📝 Заявка на подключение</h3><p class="mut" style="margin:6px 0 4px">Вход через Instagram открывается по заявкам. Введите логин вашего Instagram — аккаунт должен быть профессиональным (бизнес или автор).</p>
+    <label class="l">Логин Instagram</label><input data-f="login" placeholder="@myshop" autocapitalize="off" value="${esc(S.F.login||'')}">
+    <button class="btn" data-a="sendreq">Подать заявку</button></div>`;
+  return `${backBtn()}<h2>Подключить Instagram</h2>${body}<button class="btn ghost" data-a="guide">${ic('help')}Как подготовить аккаунт</button>`;
 }
-function plan(p){
-  const pro=p==='pro';
-  const f=(t,ok=true)=>`<li class="${ok?'':'no'}">${ic(ok?'check':'x')}<span>${t}</span></li>`;
-  const pi=S.me.plans.find(x=>x.id==='intro'),pm=S.me.plans.find(x=>x.id==='month');
-  return `<div class="plan ${pro?'pro':''}"><h3>${pro?'Business Pro':'Free'}</h3>
-  <div class="price">${pro?(pm&&pm.price?esc(pm.price):'—')+' <small>в месяц</small>':'0 <small>3 дня</small>'}</div>
-  <ul>${f('Ответ под комментарием')}${f('1 пост, 1 аккаунт')}
-  ${f('Сообщение в Direct и кнопки',pro)}${f('Автоответчик, каталог, статистика',pro)}${f('До 5 аккаунтов Instagram',pro)}</ul>
-  ${pro?(isPro()?`<div class="mut">Активен до ${fdate(S.me.until)}, осталось ${dleft()} дн.</div><button class="btn ghost" style="margin-top:10px" data-go="tariff">Продлить</button>`
-   :`<button class="btn" data-go="tariff">${ic('wallet')}Подключить Business Pro</button>${pi&&pi.price?`<div class="mut" style="margin-top:8px;text-align:center">Первый месяц: ${esc(pi.price)}</div>`:''}`)
-  :`<div class="mut">${isPro()?'Вы на тарифе Pro':'Ваш текущий тариф'}</div>`}</div>`;
-}
-function viewMoney(){
-  return `<h2>Монетизация</h2>${warn()}${plan('pro')}${plan('free')}
-  <div class="card"><h3>Оплата</h3><p class="mut">Оплатите тариф переводом и отправьте чек боту. Доступ откроется после подтверждения.</p>
-  <button class="btn ghost" style="margin-top:12px" data-go="tariff">Открыть оплату в боте</button></div>`;
-}
-function viewProfile(){
+function viewGuide(){return `${backBtn()}<h2>Как подготовить аккаунт</h2><div class="card"><div style="white-space:pre-wrap;font-size:14px">${esc((S.me&&S.me.guide||'').replace(/^📖[^\n]*\n\n/,''))}</div></div>`}
+
+/* ---------- аккаунты ---------- */
+function viewAccounts(){
   const m=S.me;
-  return `${head()}${warn()}
-  <div class="card"><h3>Аккаунты Instagram</h3>
-  ${m.accounts.length?m.accounts.map(a=>`<div class="row"><span class="ic">${ic('ig')}</span><span class="tx"><b>@${esc(a.username)}</b><span class="mut">Подключён</span></span><span class="dot"></span></div>`).join('')
-  :`<div class="empty">Аккаунт не подключён</div><button class="btn" data-go="connect">${ic('ig')}Подключить Instagram</button>`}</div>
-  <div class="card"><h3>Тариф</h3><div class="mut">${isPro()?'Business Pro до '+fdate(m.until):'Free'}</div>
-  <button class="btn ghost" style="margin-top:10px" data-tab="money">${ic('wallet')}Управлять тарифом</button></div>
-  <div class="card"><div class="row"><span class="ic">${ic('user')}</span><span class="tx"><b>Telegram ID</b><span class="mut">${user.id||'—'}</span></span></div>
-  <button class="row" data-go="support"><span class="ic">${ic('help')}</span><span class="tx"><b>Поддержка</b></span>${ic('chev')}</button></div>`;
+  return `${backBtn()}<h2>Аккаунты Instagram</h2>
+  <div class="card">${m.accounts.length?m.accounts.map(a=>`<div class="row"><span class="ic">${ic('ig')}</span><span class="tx"><b>@${esc(a.username||a.ig_id)}</b><span class="mut">${a.selected?'Выбран':'Подключён'}</span></span>
+    ${a.selected?'<span class="dot"></span>':`<button class="btn sm ghost" data-a="selacc" data-id="${esc(a.ig_id)}">Выбрать</button>`}
+    <button class="btn sm bad" data-a="disc" data-id="${esc(a.ig_id)}">${ic('trash')}</button></div>`).join(''):'<div class="empty">Нет подключённых аккаунтов</div>'}</div>
+  <button class="btn" data-a="connect">${ic('plus')}Добавить аккаунт${m.accounts.length&&!isPro()?lockTag():''}</button>`;
 }
-const TABS=[['home','Главная','home',viewHome],['rules','Сценарии','bolt',viewRules],['money','Тариф','wallet',viewMoney],['me','Профиль','user',viewProfile]];
+
+/* ---------- автоматизации ---------- */
+const KINDS={comment:['💬','Комментарии под постом → Direct',0],dm:['✉️','Сообщение в Direct по слову',1],story_mention:['📸','Упоминание в сторис',1],story_reply:['↩️','Ответ на сторис',1],menu:['📋','Кнопка меню в чате',1]};
+function viewRules(root){
+  const r=S.rules;
+  return `${root?'':backBtn()}<h2>Автоматизации</h2>
+  ${!S.me.accounts.length?`<div class="card empty">Сначала подключите Instagram.<button class="btn" data-a="connect">${ic('ig')}Подключить</button></div>`
+  :r===null?'<div class="empty">Загрузка…</div>':r.length?r.map(x=>`<div class="card"><div style="display:flex;gap:10px;align-items:center">
+     <span style="font-size:22px">${KINDS[x.kind]?KINDS[x.kind][0]:'•'}</span><div style="flex:1;min-width:0"><b>«${esc(x.keyword==='*'?'любое':x.keyword)}»</b><div class="mut">${esc(KINDS[x.kind]?KINDS[x.kind][1]:x.kind)}</div></div>
+     <button class="sw ${x.active?'on':''}" data-a="rtog" data-id="${x.id}" aria-label="вкл/выкл"></button></div>
+     <div class="mut" style="margin:8px 0">${esc((x.message||x.pub||'').slice(0,110))}</div>
+     <div style="display:flex;justify-content:space-between;align-items:center"><span class="mut">Отправлено: ${x.sent} · кликов: ${x.clicks}</span><button class="btn sm bad" data-a="rdel" data-id="${x.id}">${ic('trash')}</button></div></div>`).join('')
+  :'<div class="card empty">Пока нет автоматизаций.</div>'}
+  ${S.me.accounts.length?`<button class="btn" data-a="newrule">${ic('plus')}Новая автоматизация</button>`:''}`;
+}
+function newForm(){return{kind:'',media:'',keyword:'',message:'',pub:'',follow:false,catalog:false,buttons:[]}}
+function viewNewRule(){
+  const F=S.F.rule,m=S.me;
+  if(!m.accounts.length)return `${backBtn()}<div class="card empty">Сначала подключите Instagram.<button class="btn" data-a="connect">Подключить</button></div>`;
+  if(!F.kind)return `${backBtn()}<h2>Что автоматизируем?</h2>${Object.entries(KINDS).map(([k,v])=>`<button class="pick" data-a="kind" data-id="${k}"><span style="font-size:24px">${v[0]}</span><span style="flex:1"><b>${v[1]}</b></span>${v[2]&&!isPro()?'<span class="lock">🔒 Pro</span>':''}</button>`).join('')}`;
+  const pro=isPro(),k=F.kind;
+  const kwLabel={comment:'Слово в комментарии (можно несколько через запятую, * — любое)',dm:'Слово в Direct (через запятую, * — любое)',story_reply:'Слово в ответе на сторис (* — любое)',menu:'Название кнопки меню (до 80 символов)'}[k];
+  let h=`${backBtn()}<h2>${KINDS[k][0]} ${KINDS[k][1]}</h2>`;
+  if(k==='comment'){
+    h+=`<div class="card"><h3>Пост</h3>${S.media===null?'<div class="mut">Загрузка постов…</div>':''}
+     ${pro?`<button class="pick ${F.media===''?'on':''}" data-a="media" data-id=""><span style="font-size:22px">📌</span><b>Все посты и рилсы</b></button>`:''}
+     ${(S.media||[]).map(p=>`<button class="pick ${F.media===p.id?'on':''}" data-a="media" data-id="${esc(p.id)}">${p.img?`<img src="${esc(p.img)}" alt="">`:'<span style="font-size:22px">📷</span>'}<span style="flex:1;min-width:0">${esc(p.cap)}</span></button>`).join('')}
+     ${S.media&&!S.media.length?'<div class="mut">Постов не найдено'+(pro?' — будет работать на все.':'.')+'</div>':''}</div>`;
+  }
+  if(kwLabel)h+=`<div class="card"><label class="l" style="margin-top:0">${kwLabel}</label><input data-f="rule.keyword" value="${esc(F.keyword)}" placeholder="${k==='menu'?'💰 Цены':'ХОЧУ'}"></div>`;
+  if(pro)h+=`<div class="card"><label class="l" style="margin-top:0">Сообщение в Direct (до 640 символов)</label><textarea data-f="rule.message" maxlength="640">${esc(F.message)}</textarea>
+    <label class="l">Кнопки под сообщением (до 3)</label>
+    ${F.buttons.map((b,i)=>`<div class="bx"><div class="seg" style="margin-bottom:8px"><button class="${b.type==='link'?'on':''}" data-a="btype" data-i="${i}" data-v="link">Ссылка</button><button class="${b.type==='msg'?'on':''}" data-a="btype" data-i="${i}" data-v="msg">Ещё сообщение</button><button data-a="bdel" data-i="${i}" style="margin-left:auto;color:#ff9d9d">Удалить</button></div>
+      <input data-f="rule.buttons.${i}.t" placeholder="Название кнопки" maxlength="20" value="${esc(b.t)}">
+      ${b.type==='link'?`<input style="margin-top:8px" data-f="rule.buttons.${i}.u" placeholder="https://сайт.com/…" value="${esc(b.u)}">`
+      :`<textarea style="margin-top:8px" data-f="rule.buttons.${i}.m" placeholder="Текст второго сообщения" maxlength="640">${esc(b.m)}</textarea>
+        <input style="margin-top:8px" data-f="rule.buttons.${i}.st" placeholder="Название ссылки под ним (необязательно)" maxlength="20" value="${esc(b.st)}">
+        <input style="margin-top:8px" data-f="rule.buttons.${i}.su" placeholder="https://…" value="${esc(b.su)}">`}</div>`).join('')}
+    ${F.buttons.length<3?`<button class="btn ghost" data-a="badd">${ic('plus')}Добавить кнопку</button>`:''}</div>`;
+  else h+=`<div class="note">🆓 На Free — только публичный ответ под комментарием (3 дня, один пост). Сообщения в Direct, кнопки и остальное — на Business Pro.</div>`;
+  if(k==='comment')h+=`<div class="card"><label class="l" style="margin-top:0">Публичный ответ под комментарием${pro?' (необязательно)':''}</label><textarea data-f="rule.pub" placeholder="Отправил в Direct ✅&#10;Каждый вариант с новой строки — бот выберет случайный">${esc(F.pub)}</textarea></div>`;
+  if(pro)h+=`<div class="card"><div class="row" style="border:0;padding:0"><span class="tx"><b>Только подписчикам</b><span class="mut">Бот попросит подписаться и нажать «Проверить»</span></span><button class="sw ${F.follow?'on':''}" data-a="ftog" data-k="follow"></button></div>
+    ${(S.rules&&S.rules.length!==undefined&&S.catCount)?`<div class="row"><span class="tx"><b>С каталогом товаров</b><span class="mut">Карусель из каталога</span></span><button class="sw ${F.catalog?'on':''}" data-a="ftog" data-k="catalog"></button></div>`:''}</div>`;
+  return h+`<button class="btn" data-a="savrule">Создать автоматизацию</button>`;
+}
+async function saveRule(){
+  const F=S.F.rule,body={kind:F.kind,media:F.media,keyword:F.keyword,message:F.message,pub:F.pub,follow:F.follow,catalog:F.catalog,
+    buttons:F.buttons.map(b=>b.type==='link'?{t:b.t,u:b.u}:{t:b.t,n:{m:b.m,b:b.su?[{t:b.st||'Открыть',u:b.su}]:[]}})};
+  if(S.busy)return;S.busy=true;const j=await api('app/rule/new',{body});S.busy=false;
+  if(j.ok){toast(j.warn||'✅ Автоматизация создана');S.rules=null;S.stack=[];S.tab='rules';draw();loadRules()}
+}
+async function loadRules(){const j=await api('app/rules');if(j.ok){S.rules=j.rules;S.catCount=j.products}if(S.tab==='rules'||S.stack.length)draw()}
+
+/* ---------- автоответчик ---------- */
+function viewDm(){
+  const d=S.dm;
+  if(!isPro())return `${backBtn()}<h2>Автоответчик в Direct</h2><div class="card empty">Доступно на Business Pro.<button class="btn" data-a="plan">${ic('wallet')}Тарифы</button></div>`;
+  if(!d)return `${backBtn()}<div class="empty">Загрузка…</div>`;
+  const blk=(key,title,hint)=>`<div class="card"><div class="row" style="border:0;padding:0"><span class="tx"><b>${title}</b><span class="mut">${hint}</span></span><button class="sw ${d[key+'_on']?'on':''}" data-a="dmtog" data-k="${key}"></button></div>
+    <textarea style="margin-top:10px" data-f="dm.${key}" maxlength="1000" placeholder="Текст сообщения">${esc(d[key])}</textarea></div>`;
+  return `${backBtn()}<h2>Автоответчик в Direct</h2>${blk('welcome','👋 Приветствие','Получает человек, который пишет впервые')}${blk('dflt','↩️ Ответ по умолчанию','Когда нет ключевых слов (не чаще раза в 12 часов)')}
+  <button class="btn" data-a="dmsave">Сохранить</button><div class="mut" style="margin-top:10px">Ответы по ключевым словам — в «Новая автоматизация».</div>`;
+}
+
+/* ---------- каталог ---------- */
+function viewCatalog(){
+  const c=S.cat;
+  if(!isPro())return `${backBtn()}<h2>Каталог товаров</h2><div class="card empty">Доступно на Business Pro.<button class="btn" data-a="plan">${ic('wallet')}Тарифы</button></div>`;
+  if(!c)return `${backBtn()}<div class="empty">Загрузка…</div>`;
+  const P=S.F.prod;
+  return `${backBtn()}<h2>Каталог товаров</h2>
+  <div class="card">${c.length?c.map(p=>`<div class="row">${p.img?`<img class="pimg" src="${esc(p.img)}" alt="">`:`<span class="ic">${ic('bag')}</span>`}<span class="tx"><b>${esc(p.title)}</b><span class="mut">${esc(p.sub)} · кликов ${p.clicks}</span></span><button class="btn sm bad" data-a="pdel" data-id="${p.id}">${ic('trash')}</button></div>`).join(''):'<div class="empty">Пока пусто</div>'}</div>
+  ${c.length<10?`<div class="card"><h3>Добавить товар (${c.length}/10)</h3>
+   <label class="l">Название</label><input data-f="prod.title" maxlength="80" value="${esc(P.title)}">
+   <label class="l">Цена и описание</label><input data-f="prod.sub" maxlength="80" placeholder="120 сомони · размеры M–XL" value="${esc(P.sub)}">
+   <label class="l">Ссылка для кнопки</label><input data-f="prod.url" placeholder="https://…" value="${esc(P.url)}">
+   <label class="l">Название кнопки</label><input data-f="prod.btn" maxlength="20" placeholder="Купить" value="${esc(P.btn)}">
+   <label class="l">Фото (лучше квадратное)</label><input type="file" accept="image/*" id="pfile">
+   <button class="btn" data-a="padd">Добавить</button></div>`:'<div class="note">Максимум 10 товаров в карусели Instagram.</div>'}
+  <div class="mut">Каталог можно приложить к любой автоматизации — он придёт каруселью.</div>`;
+}
+
+/* ---------- статистика ---------- */
+function spark(rows){
+  if(rows.length<2)return '';
+  const v=rows.map(r=>r.cnt),mn=Math.min(...v),mx=Math.max(...v),W=300,H=80,sp=mx-mn||1;
+  const pts=v.map((y,i)=>`${(i/(v.length-1))*W},${H-8-((y-mn)/sp)*(H-16)}`).join(' ');
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><polyline points="${pts}" fill="none" stroke="#8d98ff" stroke-width="2.5" stroke-linejoin="round"/></svg>`;
+}
+function viewStats(){
+  const s=S.stats;
+  if(!isPro())return `${backBtn()}<h2>Статистика</h2><div class="card empty">Доступно на Business Pro.<button class="btn" data-a="plan">${ic('wallet')}Тарифы</button></div>`;
+  if(!s)return `${backBtn()}<div class="empty">Загрузка…</div>`;
+  const f=s.followers,diff=f.length>1?f[f.length-1].cnt-f[0].cnt:0;
+  return `${backBtn()}<h2>@${esc(s.username)} · 30 дней</h2>
+  <div class="grid g2"><div class="stat"><b>${s.comment}</b><span class="mut">срабатываний на комментарии</span></div><div class="stat"><b>${s.dm}</b><span class="mut">сообщений отправлено</span></div>
+   <div class="stat"><b>${s.click}</b><span class="mut">кликов по ссылкам</span></div><div class="stat"><b>${s.contacts}</b><span class="mut">контактов</span></div></div>
+  <div class="card" style="margin-top:12px"><h3>👥 Подписчики</h3>${f.length?`<div style="font-size:24px;font-weight:700">${f[f.length-1].cnt} <span class="mut">(${diff>=0?'+':''}${diff} за период)</span></div>${spark(f)}`:'<div class="mut">Данных пока нет — учёт начнётся автоматически, загляните завтра.</div>'}
+   <div class="chips" style="margin-top:8px"><div class="mut">✅ Подписались (${s.followed.length})</div>${s.followed.slice(0,20).map(x=>`<span>${esc(x)}</span>`).join('')||'<span>—</span>'}
+   <div class="mut" style="margin-top:6px">❌ Отписались (${s.unfollowed.length})</div>${s.unfollowed.slice(0,20).map(x=>`<span>${esc(x)}</span>`).join('')||'<span>—</span>'}</div>
+   <div class="mut" style="margin-top:8px">Instagram не отдаёт полный список подписчиков, поэтому по именам видны только контакты бота.</div></div>
+  ${s.rules.length?`<div class="card"><h3>По автоматизациям</h3>${s.rules.map(r=>`<div class="row"><span class="tx"><b>${KINDS[r.kind]?KINDS[r.kind][0]:'•'} «${esc(r.keyword==='*'?'любое':r.keyword)}»</b><span class="mut">отправлено ${r.sent} · кликов ${r.clicks}</span></span></div>`).join('')}</div>`:''}
+  ${s.products.length?`<div class="card"><h3>Товары (клики «Купить»)</h3>${s.products.map(p=>`<div class="row"><span class="tx"><b>🛍 ${esc(p.title)}</b></span><span class="mut">${p.clicks}</span></div>`).join('')}</div>`:''}`;
+}
+
+/* ---------- тариф и оплата ---------- */
+function payBox(P){
+  if(P.sent)return `<div class="card hero"><h3>⏳ Оплата в проверке</h3><p class="mut" style="margin-top:6px">Это займёт от 5 до 10 минут. Результат придёт сообщением от бота, а здесь всё обновится само.</p><a class="btn ghost" data-a="support">Поддержка</a></div>`;
+  return `<div class="card"><h3>💳 Оплата${P.title?': '+esc(P.title):''}</h3>
+   <div class="stat" style="margin:10px 0"><span class="mut">Сумма</span><b style="font-size:26px">${P.amount} TJS</b></div>
+   <div class="mut">Переведите сумму по номеру телефона:</div>
+   <div class="copy"><span>DC City<br><b>${esc(P.dc)}</b></span><button class="btn sm ghost" data-a="copy" data-v="${esc(P.dc)}">${ic('copy')}</button></div>
+   <div class="copy"><span>Alif Mobi<br><b>${esc(P.alif)}</b></span><button class="btn sm ghost" data-a="copy" data-v="${esc(P.alif)}">${ic('copy')}</button></div>
+   <label class="l">📸 После оплаты прикрепите чек (скриншот)</label><input type="file" accept="image/*" id="rfile">
+   <button class="btn" data-a="sendrcpt">Отправить чек</button><button class="btn ghost" data-a="paycancel">Отмена</button></div>`;
+}
+function planCard(pro){
+  const m=S.me,f=(t,ok=true)=>`<li class="${ok?'':'no'}">${ic(ok?'check':'x')}<span>${t}</span></li>`;
+  const pm=m.plans.find(x=>x.id==='month'),pi=m.plans.find(x=>x.id==='intro');
+  return `<div class="plan ${pro?'pro':''}"><h3>${pro?'Business Pro':'Free'}</h3>
+  <div class="price">${pro?(pm?pm.price:'—')+' <small>TJS / месяц</small>':'0 <small>'+m.free_days+' дня</small>'}</div>
+  <ul>${f('Ответ под комментарием')}${f('1 пост, 1 аккаунт')}${f('Сообщение в Direct и кнопки',pro)}${f('Автоответчик, каталог, статистика',pro)}${f('Сторис, меню чата, «сначала подпишись»',pro)}${f('До '+(pro?5:5)+' аккаунтов Instagram',pro)}</ul>
+  ${pro?(m.pending?'':`${m.intro&&pi?`<button class="btn" data-a="buy" data-id="intro">🔥 ${pi.label} — ${pi.price} TJS</button>`:''}<button class="btn ${m.intro&&pi?'ghost':''}" data-a="buy" data-id="month">${ic('wallet')}${pm?pm.label+' — '+pm.price+' TJS':'Подключить'}</button>`)
+  :`<div class="mut">${isPro()?'':'Ваш текущий тариф'}</div>`}</div>`;
+}
+function viewPlan(){
+  const m=S.me;
+  let st='';
+  if(isPro())st=`<div class="card hero"><span class="mut">Business Pro активен</span><div class="big">до ${fdate(m.until)}</div><span class="mut">Осталось ${dleft(m.until)} дн.</span></div>`;
+  else if(m.tier==='expired')st=`<div class="note">⏸ Бесплатный период закончился. Подключите Business Pro, чтобы продолжить.</div>`;
+  const pend=m.pending;
+  const pay=S.P&&!S.P.done?payBox(S.P):pend&&pend.status==='review'?payBox({sent:1}):pend&&pend.status==='awaiting'?`<div class="note">Вы начали оплату. <button style="text-decoration:underline" data-a="buy" data-id="${esc(pend.plan)}">Продолжить</button></div>`:'';
+  return `<h2>Тариф</h2>${st}${pay}${planCard(1)}${planCard(0)}
+  <div class="card"><h3>Нужна помощь?</h3><button class="btn ghost" data-a="support">${ic('help')}Поддержка ${esc(m.support_user||'')}</button></div>`;
+}
+
+/* ---------- профиль ---------- */
+function viewMe(){
+  const m=S.me;
+  return `${head()}
+  <div class="card"><h3>Аккаунты Instagram</h3>${m.accounts.length?m.accounts.map(a=>`<div class="row"><span class="ic">${ic('ig')}</span><span class="tx"><b>@${esc(a.username)}</b><span class="mut">${a.selected?'Выбран':'Подключён'}</span></span><span class="dot"></span></div>`).join('')
+   :`<div class="empty">Аккаунт не подключён</div>`}
+   <button class="btn ${m.accounts.length?'ghost':''}" data-a="${m.accounts.length?'accounts':'connect'}">${m.accounts.length?'Управлять аккаунтами':'Подключить Instagram'}</button></div>
+  <div class="card"><h3>Тариф</h3><div class="mut">${isPro()?'Business Pro до '+fdate(m.until):'Free'}</div><button class="btn ghost" data-a="plan">${ic('wallet')}Управлять тарифом</button></div>
+  <div class="card"><div class="row"><span class="ic">${ic('user')}</span><span class="tx"><b>Telegram ID</b><span class="mut">${m.uid||'—'}</span></span></div>
+   <button class="row" data-a="guide"><span class="ic">${ic('help')}</span><span class="tx"><b>Как подготовить аккаунт</b></span>${ic('chev')}</button>
+   <button class="row" data-a="support"><span class="ic">${ic('msg')}</span><span class="tx"><b>Поддержка</b><span class="mut">${esc(m.support_user||'')}</span></span>${ic('chev')}</button></div>`;
+}
+
+/* ================= РОЗЫГРЫШ + PLINKO ================= */
+const MC={100:'#ef6a6a',15:'#f0b24a',10:'#9a6bff',5:'#6f7dff',2:'#35c28b'};
+const MEDAL=p=>({1:'🥇',2:'🥈',3:'🥉'}[p]||'🏅');
+function cdText(t){let s=Math.max(0,Math.floor(t-(Date.now()+RF.skew)/1000));const d=Math.floor(s/86400);s%=86400;
+ const p=n=>String(n).padStart(2,'0');return (d?d+' д ':'')+p(Math.floor(s/3600))+':'+p(Math.floor(s%3600/60))+':'+p(s%60)}
+const stChip=s=>s==='open'?'<span class="chip open">Идёт набор</span>':s==='live'?'<span class="chip live">● В эфире</span>':'<span class="chip">Завершён</span>';
+
+async function rfLoad(){
+  const r=await api('raffle/list',{quiet:true});
+  if(r.ok){RF.list=r.raffles;RF.timing=r.timing;RF.mults=r.mults;RF.rows=r.rows;RF.skew=r.now*1000-Date.now();RF.loaded=true;
+    const lv=r.raffles.find(x=>x.status==='live');
+    if(lv&&RF.auto!==lv.id&&!RF.playing){RF.auto=lv.id;rfOpen(lv.id,true);toast('🎬 Розыгрыш начался!');return}
+    if(S.tab==='raffle'&&!RF.open||S.tab==='home'&&!S.stack.length)draw()}
+}
+async function rfOpen(id,auto){
+  const r=await api('raffle/'+id,{quiet:true});
+  if(!r.ok){toast('Не удалось загрузить розыгрыш');return}
+  RF.data=r.raffle;RF.timing=r.timing;RF.mults=r.mults;RF.rows=r.rows;RF.skew=r.now*1000-Date.now();
+  rfStop();RF.open=id;RF.join=null;S.stack=[];S.tab='raffle';draw();scrollTo(0,0);
+  if(auto&&(RF.data.status==='live'||RF.data.status==='finished'))rfPlay(false);
+}
+function rfStop(){RF.run++;RF.playing=false;RF.st=null;document.querySelectorAll('#wn').forEach(e=>e.remove())}
+function rfClose(){rfStop();RF.open=null;RF.data=null;draw();rfLoad()}
+
+function rfCard(r){
+  const mine=r.mine.length;
+  return `<div class="card" data-rf="${esc(r.id)}" style="cursor:pointer">
+   ${r.img?`<img class="rf-img" src="${esc(r.img)}" alt="">`:''}
+   <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:6px"><h3 style="margin:0">${esc(r.title)}</h3>${stChip(r.status)}</div>
+   <div class="mut">${r.status==='open'?'Старт: '+fstart(r.start)+' · '+cdText(r.start):r.status==='live'?'Идёт розыгрыш':'Завершён'}</div>
+   <div class="mut" style="margin-top:4px">Билетов: ${r.tickets}${mine?' · у вас: '+mine:''}</div>
+   <button class="btn ${r.status==='open'&&!mine?'':'ghost'}">${r.status==='open'?(mine?'Мои билеты':'Участвовать'):r.status==='live'?'Смотреть':'Результаты'}</button></div>`;
+}
+function viewRaffleList(){
+  return `<h2>Розыгрыши</h2>${!RF.loaded?'<div class="empty">Загрузка…</div>':RF.list.length?RF.list.map(rfCard).join(''):'<div class="card empty">Пока нет активных розыгрышей.<br>Как только админ запустит — придёт сообщение от бота.</div>'}`;
+}
+function rfJoinBox(r){
+  const j=RF.join;
+  if(RF.pay)return payBox(RF.pay);
+  if(!j)return '';
+  if(j.state==='subscribe')return `<div class="card"><h3>📢 Подпишитесь на каналы</h3>${j.channels.map(c=>`<button class="row" data-a="opench" data-u="${esc(c.url)}"><span class="ic">${ic('link')}</span><span class="tx"><b>${esc(c.title)}</b></span>${ic('chev')}</button>`).join('')}<button class="btn" data-a="rfjoin">✅ Проверить подписку</button></div>`;
+  if(j.state==='pay')return `<div class="card"><h3>🎟 Билет за ${j.price} TJS</h3><p class="mut" style="margin:6px 0">${j.mine?'У вас билетов: '+j.mine+'. ':''}Можно купить до ${j.max}.</p><button class="btn" data-a="rfbuy">🛒 Купить билет</button></div>`;
+  if(j.state==='ticket')return `<div class="card hero"><h3>✅ Вы участвуете!</h3><div class="big" style="font-size:22px">Билет №${j.n}</div><span class="tk">Промокод: <b>${esc(j.code)}</b></span><div class="mut" style="margin-top:6px">Сохраните промокод — по нему вы получите приз.</div></div>`;
+  return '';
+}
+function viewRfDetail(){
+  const r=RF.data,live=r.status==='live'||r.status==='finished';
+  const conds=[];if(r.channels.length)conds.push('Подписаться: '+r.channels.map(esc).join(', '));if(r.price)conds.push('Купить билет: '+r.price+' TJS');if(!conds.length)conds.push('Нажать «Участвовать» — билет бесплатный');
+  return `${backBtn()}
+  ${r.img?`<img class="rf-img" src="${esc(r.img)}" alt="">`:''}
+  <div style="display:flex;justify-content:space-between;gap:8px;align-items:center"><h2 style="margin:0">${esc(r.title)}</h2>${stChip(r.status)}</div>
+  ${r.text?`<p class="mut" style="margin:8px 0;white-space:pre-wrap">${esc(r.text)}</p>`:''}
+  ${r.status==='open'?`<div class="card hero" style="margin-top:12px"><span class="mut">До начала розыгрыша</span><div class="big" id="cd">${cdText(r.start)}</div><span class="mut">${fstart(r.start)} (ваше время)</span></div>`:''}
+  ${r.status==='open'?`${rfJoinBox(r)}${!RF.join&&!RF.pay?`<button class="btn" data-a="rfjoin">${ic('gift')}${r.mine.length&&r.price?'Купить ещё билет':'Участвовать'}</button>`:''}`:''}
+  ${live?`<div class="stage"><div id="plst"></div><canvas id="pl"></canvas>
+    <button class="btn ghost" data-a="rfplay">${RF.playing?'…':(r.status==='live'?'▶ Смотреть эфир':'▶ Смотреть повтор')}</button></div>
+    <div class="card pod" id="podium"></div>`:''}
+  <div class="card"><h3>Призы</h3>${r.prizes.map(p=>`<div class="rf-prize"><span>${MEDAL(p.place)}</span><span>${p.place} место — ${p.days} дн. Business Pro</span></div>`).join('')}</div>
+  <div class="card"><h3>Условия</h3>${conds.map(c=>`<div class="rf-prize"><span>•</span><span>${c}</span></div>`).join('')}<div class="mut" style="margin-top:6px">Всего билетов: ${r.tickets}</div></div>
+  <div class="card"><h3>Мои билеты</h3>${r.mine.length?r.mine.map(t=>`<span class="tk">№${t.n} · <b>${esc(t.code)}</b></span>`).join(''):'<div class="mut">У вас пока нет билетов</div>'}</div>
+  ${r.status==='finished'&&r.mine.length?`<div class="card"><h3>🏆 Получить приз</h3><p class="mut" style="margin:6px 0">Победитель вводит промокод билета — Business Pro включится автоматически.</p><input data-f="claim" placeholder="Промокод (6 символов)" autocapitalize="characters" maxlength="6" style="text-transform:uppercase"><button class="btn" data-a="claim">Активировать приз</button></div>`:''}`;
+}
+function viewRaffle(){return RF.open&&RF.data?viewRfDetail():viewRaffleList()}
+async function rfJoin(){const j=await api(`raffle/${RF.open}/join`,{body:{}});if(j.ok){RF.join=j;if(j.state==='ticket'){await rfRefresh()}draw()}}
+async function rfBuy(){const j=await api(`raffle/${RF.open}/buy`,{body:{}});if(j.ok){RF.pay={kind:'rf',amount:j.amount,dc:j.dc,alif:j.alif,title:RF.data.title};draw()}}
+async function rfRefresh(){const r=await api('raffle/'+RF.open,{quiet:true});if(r.ok){RF.data=r.raffle;RF.skew=r.now*1000-Date.now()}}
+
+/* ---- Plinko ---- */
+const PW=360,PR=11,SEG=340;
+function geo(){const rows=RF.rows,dx=(PW-24)/(rows+1),cx=PW/2,y0=62,dy=30,yb=y0+rows*dy+8;return{rows,dx,cx,y0,dy,yb,H:yb+58}}
+function rfMount(){
+  const c=$('#pl');if(!c||!RF.data||!RF.data.result&&RF.data.status!=='open'){RF.cv=null;return}
+  if(!c)return;
+  const g=geo(),dpr=Math.min(2,window.devicePixelRatio||1);
+  c.width=PW*dpr;c.height=g.H*dpr;c.style.aspectRatio=PW+'/'+g.H;RF.cv=c;RF.dpr=dpr;
+  if(!RF.st)RF.st={balls:[],counts:Array(g.rows+1).fill(0),hl:[]};
+  const fin=RF.data.status==='finished'&&!RF.playing;
+  rfPodium(fin?RF.data.result.winners:RF.shown);
+  if(!RF.playing)rfStatus(fin?'Розыгрыш завершён. Победители ниже 👇':'Эфир идёт — нажмите «Смотреть»');
+  if(!RF.raf)RF.raf=requestAnimationFrame(tick);
+}
+function rfStatus(h){const e=$('#plst');if(e)e.innerHTML=h}
+function rfPodium(w){const e=$('#podium');if(!e)return;
+  e.innerHTML='<h3>Победители</h3>'+(w&&w.length?w.map(x=>`<div class="row"><span class="ic">${MEDAL(x.place)}</span><span class="tx"><b>${esc(x.name)}</b><span class="mut">${x.place} место · билет №${x.n}${x.mult?' · '+x.mult+'x':''}</span></span></div>`).join(''):'<div class="mut">Победители появятся здесь по ходу эфира</div>')}
+function mkBall(n,bits,t0){
+  const g=geo(),pts=[{x:g.cx,y:g.y0-44},{x:g.cx,y:g.y0-PR-3}];let rights=0;
+  for(let r=0;r<g.rows;r++){rights+=+bits[r];const x=g.cx+(rights-(r+1)/2)*g.dx;pts.push({x,y:r+1<g.rows?g.y0+(r+1)*g.dy-PR-3:g.yb+26})}
+  return{n,t0,pts,b:rights,landed:false}
+}
+function ballPos(b,now){
+  const e=now-b.t0;if(e<0)return null;const k=Math.floor(e/SEG);
+  if(k>=b.pts.length-1)return b.pts[b.pts.length-1];
+  const t=(e-k*SEG)/SEG,a=b.pts[k],c=b.pts[k+1];const ez=t*t*(3-2*t);
+  return{x:a.x+(c.x-a.x)*ez,y:a.y+(c.y-a.y)*(k===0?t*t:t)-(k>=1&&k<b.pts.length-2?9*Math.sin(Math.PI*t):0)}
+}
+function tick(now){
+  if(!RF.cv||!document.body.contains(RF.cv)){RF.raf=null;return}
+  const c=RF.cv,x=c.getContext('2d'),g=geo(),st=RF.st,d=RF.dpr;
+  x.setTransform(d,0,0,d,0,0);x.clearRect(0,0,PW,g.H);
+  for(let r=0;r<g.rows;r++)for(let k=0;k<r+3;k++){x.beginPath();x.arc(g.cx+(k-(r+2)/2)*g.dx,g.y0+r*g.dy,3,0,7);x.fillStyle='#7c88ad';x.fill()}
+  for(let i=0;i<=g.rows;i++){
+    const m=RF.mults[i],bx=g.cx+(i-g.rows/2)*g.dx-g.dx/2+1,w=g.dx-2,hl=st.hl.includes(i);
+    x.fillStyle=MC[m]||'#6f7dff';x.globalAlpha=hl?1:.78;x.beginPath();x.roundRect?x.roundRect(bx,g.yb,w,34,8):x.rect(bx,g.yb,w,34);x.fill();x.globalAlpha=1;
+    if(hl){x.lineWidth=3;x.strokeStyle='#fff';x.stroke()}
+    x.fillStyle='#fff';x.font='700 13px sans-serif';x.textAlign='center';x.fillText(m+'x',bx+w/2,g.yb+21);
+    if(st.counts[i]){x.fillStyle='#c4cbff';x.font='600 11px sans-serif';x.fillText('×'+st.counts[i],bx+w/2,g.yb+50)}
+  }
+  for(const b of st.balls){
+    if(b.landed)continue;const p=ballPos(b,now);if(!p)continue;
+    if(now-b.t0>=SEG*(b.pts.length-1)){b.landed=true;st.counts[b.b]++;continue}
+    x.beginPath();x.arc(p.x,p.y,PR,0,7);x.fillStyle=`hsl(${(b.n*47)%360} 70% 55%)`;x.fill();x.lineWidth=1.5;x.strokeStyle='rgba(255,255,255,.7)';x.stroke();
+    x.fillStyle='#fff';x.font=`700 ${String(b.n).length>3?8:10}px sans-serif`;x.textAlign='center';x.textBaseline='middle';x.fillText(b.n,p.x,p.y+.5);x.textBaseline='alphabetic'
+  }
+  RF.raf=requestAnimationFrame(tick);
+}
+/* Эфир идёт по серверным часам: каждое событие имеет время `at` (мс от старта). Опоздавший зритель подхватывает с текущего момента. */
+async function rfPlay(replay){
+  const r0=RF.data;if(!r0||!r0.result||RF.playing)return;
+  const my=++RF.run,T=RF.timing,g=geo();RF.playing=true;RF.shown=[];
+  const live=()=>my===RF.run&&!!$('#pl');
+  const isLive=!replay&&r0.status==='live';
+  const t0=isLive?Date.now()-r0.result.elapsed_ms:Date.now()+1200,clk=()=>Date.now()-t0;
+  RF.st={balls:[],counts:Array(g.rows+1).fill(0),hl:[]};let cur=[];
+  const pb=$('[data-a=rfplay]');if(pb)pb.textContent='…';rfPodium([]);
+  rfStatus('🎬 Розыгрыш начинается…');
+  let evs=r0.result.events,i=0,dur=r0.result.duration_ms||0;
+  for(;;){
+    if(!live())return;
+    const e=evs[i];
+    if(!e){
+      if(isLive){await sleep(1500);if(!live())return;
+        const j=await api('raffle/'+RF.open,{quiet:true});if(!j.ok)continue;
+        RF.data=j.raffle;evs=j.raffle.result.events;dur=j.raffle.result.duration_ms||dur;
+        if(j.raffle.status==='finished'&&i>=evs.length)break;continue}
+      break;
+    }
+    const wait=e.at-clk();
+    if(wait>40){await sleep(Math.min(wait,1500));continue}
+    i++;
+    const st=RF.st,late=clk()-e.at;
+    if(e.t==='round'){st.balls=[];st.counts=Array(g.rows+1).fill(0);st.hl=[];cur=[];rfStatus(`<b>${esc(e.label)}</b><br><span class="mut">Шариков: ${e.total}</span>`)}
+    else if(e.t==='drop'){e.balls.forEach((x,k)=>{const b=mkBall(x[0],x[1],performance.now()-late+k*110);st.balls.push(b);cur.push(b)})}
+    else if(e.t==='hl'){
+      if(cur.length){const top=Math.max(...cur.map(x=>RF.mults[x.b])),tb=cur.filter(x=>RF.mults[x.b]===top);
+        st.hl=[...new Set(tb.map(x=>x.b))];
+        rfStatus(`Лучшая корзина <b>${top}x</b>: ${tb.slice(0,12).map(x=>'№'+x.n).join(', ')}${tb.length>12?'…':''}`)}}
+    else if(e.t==='win'){
+      RF.shown.push(e);rfPodium(RF.shown);
+      const rem=T.win_ms-late;
+      if(rem>800){const w=document.createElement('div');w.id='wn';
+        w.innerHTML=`<div class="m">${MEDAL(e.place)}</div><div class="n">${esc(e.name)}</div><div class="s">${e.place} место · билет №${e.n}${e.mult?' · '+e.mult+'x':''}</div>`;
+        document.body.append(w);tg&&tg.HapticFeedback&&tg.HapticFeedback.notificationOccurred('success');setTimeout(()=>w.remove(),rem)}
+    }
+  }
+  const left=dur-clk();if(left>0)await sleep(left);
+  if(my!==RF.run)return;
+  RF.playing=false;if(RF.st)RF.st.hl=[];rfStatus('🏁 Розыгрыш завершён. Победителям бот отправил сообщение.');
+  const pb2=$('[data-a=rfplay]');if(pb2)pb2.textContent='▶ Смотреть повтор';
+  if(RF.data.status==='live')await rfOpen(RF.open,false);
+}
+setInterval(()=>{
+  if(S.tab!=='raffle')return;
+  const e=$('#cd');
+  if(e&&RF.data&&RF.data.status==='open'){e.textContent=cdText(RF.data.start);
+    if(RF.data.start*1000<=Date.now()+RF.skew&&!RF.polling){RF.polling=true;setTimeout(async()=>{await rfOpen(RF.open,true);RF.polling=false},4000)}}
+},1000);
+
+/* ---------- отрисовка ---------- */
+const TABS=[['home','Главная','home'],['rules','Сценарии','bolt'],['raffle','Розыгрыш','gift'],['plan','Тариф','wallet'],['me','Профиль','user']];
 function draw(){
-  const t=TABS.find(x=>x[0]===S.tab)||TABS[0];
-  $('#app').innerHTML=t[3]();
-  $('#nav').innerHTML=TABS.map(x=>`<button class="${x[0]===S.tab?'on':''}" data-tab="${x[0]}" aria-label="${x[1]}">${ic(x[2])}${x[1]}</button>`).join('');
+  const a=$('#app');
+  if(!S.auth){a.innerHTML=authWarn();drawNav();return}
+  if(!S.me){a.innerHTML=S.loaded?'<div class="card empty">Не удалось загрузить данные. Откройте приложение снова.</div>':'<div class="empty">Загрузка…</div>';drawNav();return}
+  const top=S.stack[S.stack.length-1];let h;
+  if(top){
+    const v={connect:viewConnect,guide:viewGuide,accounts:viewAccounts,newrule:viewNewRule,rules:()=>viewRules(false),dm:viewDm,catalog:viewCatalog,stats:viewStats}[top.n];
+    h=v?v():'';
+  }else h=({home:viewHome,rules:()=>viewRules(true),raffle:viewRaffle,plan:viewPlan,me:viewMe}[S.tab])();
+  a.innerHTML=h;drawNav();
+  if(!top&&S.tab==='raffle')rfMount();
+  if(tg&&tg.BackButton){const sb=S.stack.length||(S.tab==='raffle'&&RF.open);sb?tg.BackButton.show():tg.BackButton.hide()}
 }
-const GO={connect:()=>toBot('connect'),new:()=>toBot('new'),guide:()=>toBot('guide'),tariff:()=>toBot('tariff'),support:()=>toBot('')};
+function drawNav(){
+  const lv=RF.list.some(r=>r.status==='live');
+  $('#nav').innerHTML=TABS.map(x=>`<button class="${x[0]===S.tab&&!S.stack.length?'on':''}" data-tab="${x[0]}" aria-label="${x[1]}">${ic(x[2])}${x[1]}${x[0]==='raffle'&&lv?'<i class="pip"></i>':''}</button>`).join('');
+}
+if(tg&&tg.BackButton)tg.BackButton.onClick(back);
+
+/* ---------- ввод ---------- */
+function setPath(path,v){const p=path.split('.');let o=S.F;for(let i=0;i<p.length-1;i++)o=o[p[i]];o[p[p.length-1]]=v}
+document.addEventListener('input',e=>{const f=e.target.dataset&&e.target.dataset.f;if(!f)return;
+  if(f==='claim'){S.F.claim=e.target.value;return}
+  if(f.startsWith('dm.')){S.dm[f.slice(3)]=e.target.value;return}
+  setPath(f,e.target.value)});
+
+/* ---------- действия ---------- */
+const A={
+  back,plan:()=>tab('plan'),
+  connect:()=>go('connect'),guide:()=>go('guide'),accounts:()=>go('accounts'),
+  newrule:()=>{S.F.rule=newForm();S.media=null;go('newrule')},
+  rules:()=>{S.rules=null;go('rules');loadRules()},
+  dm:async()=>{if(!isPro())return needPro();S.dm=null;go('dm');const j=await api('app/dm');if(j.ok){S.dm=j;draw()}},
+  catalog:async()=>{if(!isPro())return needPro();S.cat=null;S.F.prod={title:'',sub:'',url:'',btn:'',};go('catalog');const j=await api('app/catalog');if(j.ok){S.cat=j.products;draw()}},
+  stats:async()=>{if(!isPro())return needPro();S.stats=null;go('stats');const j=await api('app/stats');if(j.ok){S.stats=j;draw()}},
+  refresh:async()=>{const n=S.me.accounts.length;await loadMe();draw();if(S.me.accounts.length>n){toast('✅ Instagram подключён!');S.stack=[];S.tab='home';draw()}else toast('Пока без изменений')},
+  oauth:()=>{openExt(S.me.login.url);S.polls=(S.polls||0)+1;pollConnect()},
+  sendreq:async()=>{const j=await api('app/request',{body:{login:S.F.login||''}});if(j.ok){toast('Заявка отправлена');await loadMe();draw();pollConnect()}},
+  selacc:async(el)=>{const j=await api('app/account',{body:{act:'select',ig_id:el.dataset.id}});if(j.ok){await loadMe();S.rules=null;draw()}},
+  disc:async(el)=>{if(!confirm('Отключить аккаунт? Все автоматизации и данные будут удалены.'))return;const j=await api('app/account',{body:{act:'disconnect',ig_id:el.dataset.id}});if(j.ok){toast('Аккаунт отключён');S.rules=null;await loadMe();draw()}},
+  kind:(el)=>{const k=el.dataset.id;if(KINDS[k][2]&&!isPro())return needPro();S.F.rule.kind=k;if(k==='comment'&&S.media===null){api('app/media').then(j=>{S.media=j.ok?j.posts:[];if(!isPro()&&S.media[0]&&S.F.rule.media==='')S.F.rule.media=S.media[0].id;draw()})}
+    if(!S.rules)loadRules();draw()},
+  media:(el)=>{S.F.rule.media=el.dataset.id;draw()},
+  badd:()=>{S.F.rule.buttons.push({type:'link',t:'',u:'',m:'',st:'',su:''});draw()},
+  bdel:(el)=>{S.F.rule.buttons.splice(+el.dataset.i,1);draw()},
+  btype:(el)=>{S.F.rule.buttons[+el.dataset.i].type=el.dataset.v;draw()},
+  ftog:(el)=>{const k=el.dataset.k;S.F.rule[k]=!S.F.rule[k];draw()},
+  savrule:saveRule,
+  rtog:async(el)=>{const j=await api('app/rule/act',{body:{act:'toggle',id:+el.dataset.id}});if(j.ok){if(j.warn)toast(j.warn);loadRules()}},
+  rdel:async(el)=>{if(!confirm('Удалить автоматизацию?'))return;const j=await api('app/rule/act',{body:{act:'delete',id:+el.dataset.id}});if(j.ok)loadRules()},
+  dmtog:(el)=>{const k=el.dataset.k+'_on';S.dm[k]=S.dm[k]?0:1;draw()},
+  dmsave:async()=>{const d=S.dm,j=await api('app/dm',{body:{welcome:d.welcome,welcome_on:d.welcome_on,dflt:d.dflt,dflt_on:d.dflt_on}});if(j.ok){S.dm=j;toast('✅ Сохранено');draw()}},
+  padd:async()=>{const P=S.F.prod,f=$('#pfile'),fd=new FormData();fd.append('title',P.title);fd.append('sub',P.sub);fd.append('url',P.url);fd.append('btn',P.btn);
+    if(f&&f.files[0]){try{fd.append('photo',await toJpeg(f.files[0],1080),'p.jpg')}catch(e){toast('Не удалось обработать фото');return}}
+    const j=await api('app/catalog',{form:fd});if(j.ok){S.cat=j.products;S.F.prod={title:'',sub:'',url:'',btn:''};toast('✅ Товар добавлен');draw()}},
+  pdel:async(el)=>{const j=await api('app/catalog',{body:{act:'delete',id:+el.dataset.id}});if(j.ok){S.cat=j.products;draw()}},
+  buy:async(el)=>{const j=await api('app/pay/start',{body:{plan:el.dataset.id}});if(j.ok){S.P={kind:'plan',amount:j.amount,dc:j.dc,alif:j.alif,title:'Business Pro · '+j.label};tab('plan')}},
+  paycancel:async()=>{if(S.P&&S.P.kind==='plan'){await api('app/pay/cancel',{body:{}});S.P=null;await loadMe()}else{RF.pay=null}draw()},
+  sendrcpt:async()=>{const P=S.P&&!S.P.done&&S.tab==='plan'&&!RF.open?S.P:RF.pay,f=$('#rfile');if(!f||!f.files[0]){toast('Прикрепите фото чека');return}
+    if(S.busy)return;S.busy=true;let blob;try{blob=await toJpeg(f.files[0],1280)}catch(e){S.busy=false;toast('Не удалось обработать фото');return}
+    const fd=new FormData();fd.append('file',blob,'receipt.jpg');
+    const j=await api(P.kind==='plan'?'app/pay/receipt':'raffle/receipt',{form:fd});S.busy=false;
+    if(j.ok){toast('✅ Чек отправлен');P.sent=1;if(P.kind==='plan'){await loadMe()}draw();watchPay()}},
+  copy:(el)=>copy(el.dataset.v),
+  support:()=>openTg(S.me.support),
+  opench:(el)=>openTg(el.dataset.u),
+  rfjoin:rfJoin,rfbuy:rfBuy,
+  rfplay:()=>{if(!RF.playing)rfPlay(RF.data.status!=='live')},
+  claim:async()=>{const j=await api('raffle/claim',{body:{code:S.F.claim||''}});if(j.msg)toast(j.msg);if(j.ok){await loadMe()}},
+};
 document.addEventListener('click',e=>{
-  const b=e.target.closest('[data-tab],[data-go]');if(!b)return;
-  if(b.dataset.tab){S.tab=b.dataset.tab;draw();scrollTo(0,0);tg&&tg.HapticFeedback&&tg.HapticFeedback.selectionChanged()}
-  else GO[b.dataset.go]&&GO[b.dataset.go]();
+  const b=e.target.closest('[data-tab],[data-a],[data-rf]');if(!b)return;
+  if(b.dataset.tab){tab(b.dataset.tab);return}
+  if(b.dataset.rf!==undefined){rfOpen(b.dataset.rf,false);return}
+  const f=A[b.dataset.a];if(f)f(b);
 });
-draw();load();
+async function pollConnect(){
+  for(let i=0;i<40;i++){await sleep(4000);const n=S.me?S.me.accounts.length:0;
+    const top=S.stack[S.stack.length-1];if(!top||top.n!=='connect')return;
+    await loadMe();
+    if(S.me.accounts.length>n){toast('✅ Instagram подключён!');S.stack=[];S.tab='home';draw();return}
+    if(S.me.login.allowed&&i%5===0)draw()}
+}
+async function watchPay(){
+  for(let i=0;i<120;i++){await sleep(8000);const was=S.me&&S.me.tier;await loadMe();
+    if(S.me&&S.me.tier==='pro'&&was!=='pro'){toast('✅ Business Pro подключён!');S.P=null;draw();return}
+    if(S.me&&!S.me.pending&&S.P&&S.P.sent){S.P=null;draw();return}
+    if(RF.open){await rfRefresh();if(RF.data&&RF.data.mine.length&&RF.pay&&RF.pay.sent){RF.pay=null;RF.join=null;toast('🎟 Билет выдан!');draw();return}}}
+}
+
+/* ---------- старт ---------- */
+(async()=>{
+  draw();
+  await loadMe();
+  rfLoad();
+  setInterval(()=>{if(!document.hidden)rfLoad()},12000);
+  if(q.get('rf')){rfOpen(q.get('rf'),true)}
+  if(S.me&&S.me.pending&&S.me.pending.status==='review'){S.P=null}
+  draw();
+})();
 </script>
 </body>
 </html>
