@@ -103,7 +103,7 @@ CHANNEL = "@horizonmarkettj"  # канал для обязательной по�
 CHANNEL_URL = "https://t.me/horizonmarkettj"
 CREATOR_URL = "https://t.me/IDIEVW"
 SHOP_URL = "https://korvontj.shop"  # ссылка для кнопки «Посмотреть» (магазин)
-BOT_VERSION = "2026-11-20 two-bots+instagram v2"
+BOT_VERSION = "2026-11-22 ar-v1 диагностика"
 BOT_NAME = "Taj Saver"  # так будет называться любая присланная музыка
 HERE = Path(__file__).resolve().parent
 COVER = HERE / "cover.jpg"  # обложка внутри mp3 (640x640)
@@ -2894,7 +2894,11 @@ async def ig_on_messaging(acc, m: dict):
     if not uid:
         return
     ar_on = await ar_active(acc)
+    logging.info("IG DM от %s к @%s: tier=%s, автоответчик=%s, текст=%s", uid, acc["username"], await acc_tier(acc), ar_on,
+                 bool((m.get("message") or {}).get("text")))
     if await acc_tier(acc) != "pro" and not ar_on:
+        logging.info("IG DM: пропущено — нет Business Pro и автоответчик не активен (включён=%s, подписка до=%s)",
+                     acc["ar_on"], ar_until_of(await get_sub(acc["owner"])))
         return  # автоматизация Direct — только Business Pro (или платный ИИ-автоответчик)
     msg = m.get("message") or {}
     if msg.get("is_echo"):
@@ -2990,6 +2994,7 @@ async def ig_handle_payload(data: dict):
     for entry in data.get("entry", []) or []:
         acc = ig_acc(entry.get("id"))
         if not acc:
+            logging.warning("IG webhook: аккаунт %s не найден в базе (подключён другой аккаунт или сменился ID)", entry.get("id"))
             continue
         for ch in entry.get("changes", []) or []:
             if ch.get("field") == "comments":
@@ -3017,11 +3022,17 @@ async def ig_webhook_post(request: web.Request):
     if secrets:
         got = request.headers.get("X-Hub-Signature-256", "")
         if not any(hmac.compare_digest(got, "sha256=" + hmac.new(x.encode(), raw, hashlib.sha256).hexdigest()) for x in secrets):
+            logging.warning("IG webhook: ПОДПИСЬ НЕ СОВПАЛА (проверьте IG_APP_SECRET / IG_LOGIN_APP_SECRET) — событие отброшено")
             return web.Response(status=403, text="bad signature")
     try:
         data = json.loads(raw)
     except ValueError:
         return web.Response(status=400, text="bad json")
+    try:
+        logging.info("IG webhook: object=%s, %s", data.get("object"), [
+            (e.get("id"), [c.get("field") for c in e.get("changes") or []], len(e.get("messaging") or [])) for e in data.get("entry") or []])
+    except Exception:
+        pass
     task = asyncio.create_task(ig_handle_payload(data))  # Instagram ждёт ответ быстро
     bg_tasks.add(task)
     task.add_done_callback(bg_tasks.discard)
@@ -5042,6 +5053,8 @@ async def ar_owner_replied_api(acc, uid: str, since: int) -> bool:
 async def ar_handle(acc, uid: str, text: str) -> bool:
     """Новое сообщение человека. True — автоответчик берёт его на себя (ответит, если владелец промолчит)."""
     if not text or not OPENROUTER_KEY or not ar_in_hours(acc):
+        logging.info("AR: не беру сообщение — текст=%s, OPENROUTER_API_KEY=%s, в расписании=%s",
+                     bool(text), bool(OPENROUTER_KEY), ar_in_hours(acc))
         return False
     now = int(time.time())
     delay = ar_delay_of(acc)
@@ -5052,6 +5065,7 @@ async def ar_handle(acc, uid: str, text: str) -> bool:
     else:
         dbx("INSERT INTO ar_queue(ig_id, user_id, text, due, first_ts) VALUES(?,?,?,?,?)",
             (acc["ig_id"], uid, text[:1000], now + delay * 60, now))
+    logging.info("AR: сообщение от %s поставлено в очередь, ответ через %s мин", uid, delay)
     if delay == 0:
         bg(ar_flush())
     return True
@@ -5066,13 +5080,17 @@ async def ar_answer_one(r) -> None:
         return  # окно ответа в Instagram закрыто
     act = db.execute("SELECT ts FROM ig_owner_act WHERE ig_id=? AND user_id=?", (acc["ig_id"], uid)).fetchone()
     if act and act["ts"] >= first:
+        logging.info("AR: %s — владелец ответил сам, ИИ молчит", uid)
         return  # владелец ответил сам
     if int(r["due"]) > first and await ar_owner_replied_api(acc, uid, first):
+        logging.info("AR: %s — в переписке есть ответ владельца, ИИ молчит", uid)
         return
     ans = await ig_ai_answer(acc, uid, r["text"], note=ar_note_for(acc), kind="ar")
     if not ans:
+        logging.info("AR: ИИ вернул пустой ответ (лимит или ошибка) для %s", uid)
         return
     await ig_send(acc, ans, user_id=uid)
+    logging.info("AR: ответ отправлен %s", uid)
     dbx("UPDATE ig_contacts SET last_auto=? WHERE ig_id=? AND user_id=?", (int(time.time()), acc["ig_id"], uid))
     ig_log(acc["ig_id"], "dm")
     ig_log(acc["ig_id"], "ar")
