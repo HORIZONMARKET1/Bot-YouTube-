@@ -174,7 +174,7 @@ function lockTag(){return isPro()?'':'<span class="lock">🔒 Pro</span>'}
 function needPro(){toast('Доступно на Business Pro');S.stack=[];S.tab='plan';draw()}
 
 /* ---------- шапка ---------- */
-function head(){
+function appHead(){
   const m=S.me||{},nm=(m.name||user.first_name||'')+'',ini=esc((nm||'?')[0].toUpperCase());
   return `<header><div class="av">${user.photo_url?`<img src="${esc(user.photo_url)}" alt="">`:ini}</div>
   <div class="t"><b>${esc(nm)||'InstaFlow'}</b><span>${m.username?'@'+esc(m.username):'ID '+(m.uid||user.id||'—')}</span></div>
@@ -187,7 +187,7 @@ const curAcc=()=>S.me&&S.me.accounts.find(a=>a.selected)||(S.me&&S.me.accounts[0
 function viewHome(){
   const m=S.me,a=curAcc(),lv=RF.list.find(r=>r.status==='live');
   const item=(act,icon,t,s,pro)=>`<button class="row" data-a="${act}"><span class="ic">${ic(icon)}</span><span class="tx"><b>${t}${pro?lockTag():''}</b><span class="mut">${s}</span></span>${ic('chev')}</button>`;
-  return `${head()}
+  return `${appHead()}
   ${lv?`<button class="card hero" style="width:100%;text-align:left" data-rf="${esc(lv.id)}"><span class="chip live">● В эфире</span><div class="big" style="font-size:20px;margin-top:8px">${esc(lv.title)}</div><span class="mut">Нажмите, чтобы смотреть розыгрыш</span></button>`:''}
   <div class="card hero"><span class="mut">Подключённый аккаунт</span>
     <div class="big">${a?'@'+esc(a.username):'Instagram не подключён'}</div>
@@ -369,7 +369,7 @@ function viewPlan(){
 /* ---------- профиль ---------- */
 function viewMe(){
   const m=S.me;
-  return `${head()}
+  return `${appHead()}
   <div class="card"><h3>Аккаунты Instagram</h3>${m.accounts.length?m.accounts.map(a=>`<div class="row"><span class="ic">${ic('ig')}</span><span class="tx"><b>@${esc(a.username)}</b><span class="mut">${a.selected?'Выбран':'Подключён'}</span></span><span class="dot"></span></div>`).join('')
    :`<div class="empty">Аккаунт не подключён</div>`}
    <button class="btn ${m.accounts.length?'ghost':''}" data-a="${m.accounts.length?'accounts':'connect'}">${m.accounts.length?'Управлять аккаунтами':'Подключить Instagram'}</button></div>
@@ -548,7 +548,7 @@ setInterval(()=>{
 
 /* ---------- отрисовка ---------- */
 const TABS=[['home','Главная','home'],['rules','Сценарии','bolt'],['raffle','Розыгрыш','gift'],['plan','Тариф','wallet'],['me','Профиль','user']];
-function showErr(e){try{const m=(e&&(e.stack||e.message))||String(e);$('#app').innerHTML='<div class="card" style="white-space:pre-wrap;word-break:break-all;font-size:12px"><b>Ошибка приложения</b>\n'+esc(String(m).slice(0,600))+'</div>'}catch(_){}}
+function showErr(e){try{const m=(e&&e.message?e.name+': '+e.message+'\n':'')+((e&&e.stack)||String(e));$('#app').innerHTML='<div class="card" style="white-space:pre-wrap;word-break:break-all;font-size:12px"><b>Ошибка приложения</b>\n'+esc(String(m).slice(0,600))+'</div>'}catch(_){}}
 window.addEventListener('error',ev=>showErr(ev.error||ev.message));
 window.addEventListener('unhandledrejection',ev=>showErr(ev.reason));
 function draw(){try{_draw()}catch(e){showErr(e);try{drawNav()}catch(_){}}}
