@@ -84,6 +84,7 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeChat,
     CallbackQuery,
+    BufferedInputFile,
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -1411,13 +1412,13 @@ def webapp_link(uid: int) -> str:
     return f"{WEBAPP_URL}/?lang={get_lang(uid) or 'ru'}"
 
 
-def check_init_data(init_data: str) -> int | None:
+def check_init_data(init_data: str, token: str | None = None) -> int | None:
     """Проверяет подпись Telegram (initData Mini App). Возвращает id пользователя или None."""
     try:
         data = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
         got = data.pop("hash", "")
         check = "\n".join(f"{k}={v}" for k, v in sorted(data.items()))
-        secret = hmac.new(b"WebAppData", (TOKEN or "").encode(), hashlib.sha256).digest()
+        secret = hmac.new(b"WebAppData", (token or TOKEN or "").encode(), hashlib.sha256).digest()
         calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(calc, got):
             return None
@@ -2224,6 +2225,7 @@ async def other(message: Message):
 #  • динамика подписчиков за 30 дней, кто подписался / отписался среди контактов
 # =====================================================================================
 import random  # noqa: E402
+import secrets  # noqa: E402
 
 TOKEN2 = os.getenv("BOT2_TOKEN")
 IG_APP_ID = (os.getenv("IG_APP_ID") or "").strip()
@@ -3231,6 +3233,9 @@ def ig_register_routes(app: web.Application):
     app.router.add_get("/ig/oauth", ig_oauth_cb)
     app.router.add_get("/instaflow", web_index2)
     app.router.add_get("/instaflow/", web_index2)
+    app_register_routes(app)
+    app.router.add_get("/api/raffle/list", api_rf_list)
+    app.router.add_get("/api/raffle/{rid}", api_rf_one)
     app.router.add_get("/privacy", privacy_page)
     app.router.add_get("/terms", terms_page)
     app.router.add_get("/ig/delete-info", ig_delete_info)
@@ -3575,11 +3580,11 @@ IG_MENU_BTN = "📋 Меню"
 IG_APP_BTN = "📲 InstaFlow"
 
 
-def ig_reply_kb(bot_username: str = "") -> ReplyKeyboardMarkup:
+def ig_reply_kb(bot_username: str = "", uid: int = 0) -> ReplyKeyboardMarkup:
     """Постоянная клавиатура под полем ввода: Mini App + Меню."""
     row = []
     if WEBAPP_URL:
-        url = f"{WEBAPP_URL}/instaflow" + (f"?bot={bot_username}" if bot_username else "")
+        url = rf_app_url(uid, "", bot_username)  # подпись u/s нужна: Mini App из reply-клавиатуры не получает initData
         row.append(KeyboardButton(text=IG_APP_BTN, web_app=WebAppInfo(url=url)))
     row.append(KeyboardButton(text=IG_MENU_BTN))
     return ReplyKeyboardMarkup(keyboard=[[b] for b in row], resize_keyboard=True, is_persistent=True)  # кнопки друг под другом
@@ -3605,13 +3610,13 @@ async def ig_app_card(message: Message, inline: bool = False):
             await message.answer("⚠️ Файл Bot2/index.html не найден на сервере, приложение откроется пустым.\n"
                                  + bot2_missing_info() + "\nПроверьте Dockerfile: нужен COPY . . (или COPY Bot2 ./Bot2).")
     try:
-        km = await message.answer("🚀 InstaFlow", reply_markup=ig_reply_kb(uname))
+        km = await message.answer("🚀 InstaFlow", reply_markup=ig_reply_kb(uname, uid))
         try:  # клавиатура остаётся, а служебное сообщение убираем — в чате видны только кнопки внизу
             await bot.delete_message(message.chat.id, km.message_id)
         except Exception:
             pass
         if inline and ok:  # карточка с «Открыть»
-            url = f"{WEBAPP_URL}/instaflow?bot={uname}"
+            url = rf_app_url(uid, "", uname)
             await message.answer("📲 InstaFlow\nУправляйте автоответчиком, тарифом и профилем в приложении.",
                                  reply_markup=_kb([[InlineKeyboardButton(text="Открыть", web_app=WebAppInfo(url=url))]]))
     except Exception:
@@ -3625,13 +3630,18 @@ async def ig_app_cmd(message: Message):
 
 @dp2.message(CommandStart())
 @dp2.message(Command("menu"))
-async def ig_start(message: Message):
+async def ig_start(message: Message, command: CommandObject | None = None):
     ig_wait.pop(message.from_user.id, None)
     adm_wait.pop(message.from_user.id, None)
     bg(client_touch(message.from_user))
     if (message.text or "").startswith("/start"):
         await ig_app_card(message)  # сначала постоянные кнопки под полем ввода (📲 InstaFlow + 📋 Меню)
     await ig_show_menu(message, message.from_user.id)
+    arg = (command.args or "") if command else ""
+    if arg.startswith("rf_"):
+        async def _send(t, k):
+            return await message.answer(t, reply_markup=k)
+        await rf_flow(_send, message.from_user.id, message.from_user, arg[3:])
 
 
 @dp2.message(Command("cancel"))
@@ -4464,8 +4474,11 @@ async def pay_receipt(message: Message, pay: dict):
 
 @dp2.message(F.document)
 async def ig_doc(message: Message):
-    pay = await pay_awaiting(message.from_user.id)
     mime = (message.document.mime_type or "")
+    rp = await rf_pay_awaiting(message.from_user.id)
+    if rp and (mime.startswith("image/") or mime == "application/pdf"):
+        return await rf_receipt(message, rp)
+    pay = await pay_awaiting(message.from_user.id)
     if pay and (mime.startswith("image/") or mime == "application/pdf"):
         return await pay_receipt(message, pay)
     await ig_show_menu(message, message.from_user.id)
@@ -4608,6 +4621,1391 @@ async def sub_watch_loop():
         await asyncio.sleep(3600)
 
 
+# ====================== Розыгрыш (Plinko) ======================
+RF_MAX_TICKETS = 10          # сколько билетов может купить один человек
+RF_ROWS = 8                  # рядов штырьков
+RF_MULTS = [100, 15, 10, 5, 2, 5, 10, 15, 100]  # множители корзин (RF_ROWS + 1 штук)
+RF_T = {"batch_ms": 1500, "fall_ms": 3400, "hl_ms": 3200, "win_ms": 5500, "lead_ms": 3000}
+rf_lock = asyncio.Lock()
+RF_ACTIVE: set[str] = set()
+
+
+# --- RF_PURE_BEGIN (чистая логика жеребьёвки, без Telegram) ---
+def rf_batch_size(n: int) -> int:
+    return 5 if n <= 60 else -(-n // 12)
+
+
+def rf_flatten(timeline: list):
+    """Раскладывает раунды на события с временем `at` (мс от начала эфира): round → drop(пачки шариков) → hl → win."""
+    ev, cur = [], RF_T["lead_ms"]
+    for e in timeline:
+        if e["t"] == "round":
+            b = e["batch"]
+            n_batches = -(-len(e["balls"]) // b)
+            ev.append({"t": "round", "label": e["label"], "total": len(e["balls"]), "at": cur})
+            for k in range(n_batches):
+                ev.append({"t": "drop", "balls": e["balls"][k * b:(k + 1) * b], "at": cur + k * RF_T["batch_ms"]})
+            cur += n_batches * RF_T["batch_ms"] + RF_T["fall_ms"]
+            ev.append({"t": "hl", "at": cur})
+            cur += RF_T["hl_ms"]
+        else:
+            ev.append({**e, "at": cur})
+            cur += RF_T["win_ms"]
+    return ev, cur
+
+
+def rf_visible(events: list, elapsed_ms: int, look: int = 2500) -> list:
+    """Что можно отдать зрителю на момент elapsed_ms: победители — только когда объявлены, шарики — на 2,5 с вперёд."""
+    return [e for e in events if e["at"] <= elapsed_ms + (look if e["t"] in ("round", "drop") else 0)]
+
+
+def rf_draw(tickets: list, places: int, rng=None) -> dict:
+    """tickets: [{n, uid, name}]. Возвращает {timeline, names, duration_ms, winners}.
+    Раунд: все билеты-шарики падают в корзины. Побеждает шарик в корзине с наибольшим множителем.
+    Если в лучшей корзине несколько шариков — переигровка между ними, пока не останется один.
+    Следующие места берутся из следующих по множителю корзин (при ничьей — тоже переигровка)."""
+    rng = rng or random.SystemRandom()
+    timeline: list = []
+    winners: list = []
+    won_uids: set = set()
+    names = {t["n"]: (t.get("name") or "Участник")[:24] for t in tickets}
+
+    def drop(cands, label):
+        balls = []
+        for t in cands:
+            bits = [rng.randint(0, 1) for _ in range(RF_ROWS)]
+            balls.append({"n": t["n"], "b": sum(bits), "p": "".join(map(str, bits)), "_t": t})
+        timeline.append({"t": "round", "label": label, "batch": rf_batch_size(len(cands)),
+                         "balls": [[x["n"], x["p"]] for x in balls]})
+        return balls
+
+    def rank(cands, need, label, depth=0):
+        start = len(winners)
+        cands = [t for t in cands if t["uid"] not in won_uids]
+        if not cands or need <= 0:
+            return
+        if depth > 10:  # страховка от бесконечной ничьей
+            t = rng.choice(cands)
+            winners.append({"place": len(winners) + 1, "n": t["n"], "uid": t["uid"], "name": names[t["n"]], "mult": 0})
+            won_uids.add(t["uid"])
+            timeline.append({"t": "win", **{k: winners[-1][k] for k in ("place", "n", "name", "mult")}})
+            return
+        balls = drop(cands, label)
+        mults = sorted({RF_MULTS[x["b"]] for x in balls}, reverse=True)
+        for m in mults:
+            if len(winners) - start >= need:
+                break
+            grp = [x["_t"] for x in balls if RF_MULTS[x["b"]] == m and x["_t"]["uid"] not in won_uids]
+            if not grp:
+                continue
+            if len(grp) == 1:
+                t = grp[0]
+                winners.append({"place": len(winners) + 1, "n": t["n"], "uid": t["uid"], "name": names[t["n"]], "mult": m})
+                won_uids.add(t["uid"])
+                timeline.append({"t": "win", **{k: winners[-1][k] for k in ("place", "n", "name", "mult")}})
+            else:
+                left = need - (len(winners) - start)
+                rank(grp, min(len(grp), left), f"Переигровка ({len(grp)} билетов в корзине {m}x)", depth + 1)
+
+    rank(tickets, places, "Раунд 1 — все билеты")
+    events, dur = rf_flatten(timeline)
+    return {"events": events, "names": names, "duration_ms": dur, "winners": winners}
+
+
+def rf_parse_time(text: str, tz_offset: int, now: float | None = None):
+    """«ДД.ММ.ГГГГ ЧЧ:ММ» или «ДД.ММ ЧЧ:ММ» (время Таджикистана) → unix-время (UTC) или None."""
+    import datetime as _dt
+    m = re.fullmatch(r"\s*(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?\s+(\d{1,2})[:.](\d{2})\s*", text or "")
+    if not m:
+        return None
+    d, mo, y, h, mi = m.groups()
+    now = now or time.time()
+    y = int(y) if y else _dt.datetime.fromtimestamp(now + tz_offset, tz=_dt.timezone.utc).year
+    if y < 100:
+        y += 2000
+    try:
+        dt = _dt.datetime(y, int(mo), int(d), int(h), int(mi), tzinfo=_dt.timezone.utc)
+    except ValueError:
+        return None
+    return int(dt.timestamp()) - tz_offset
+
+
+def rf_parse_prizes(text: str):
+    """Строки «место дни», например «1 30». Места должны идти подряд с 1. Возвращает список или None."""
+    out = []
+    for ln in (text or "").splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        m = re.fullmatch(r"(\d{1,2})\s*[-–—:.,]?\s*(\d{1,4})(?:\s*(?:дн\.?|дней|день|д))?", ln, re.I)
+        if not m:
+            return None
+        out.append({"place": int(m.group(1)), "days": int(m.group(2))})
+    out.sort(key=lambda x: x["place"])
+    if not out or [p["place"] for p in out] != list(range(1, len(out) + 1)) or any(p["days"] <= 0 for p in out):
+        return None
+    return out
+# --- RF_PURE_END ---
+
+
+def rf_fmt(ts) -> str:
+    return time.strftime("%d.%m.%Y %H:%M", time.gmtime(int(ts) + TZ_OFFSET))
+
+
+MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+
+def rf_medal(p: int) -> str:
+    return MEDALS.get(p, "🏅")
+
+
+def rf_sign(uid: int) -> str:
+    return hmac.new((TOKEN2 or "").encode(), f"rf{uid}".encode(), hashlib.sha256).hexdigest()[:24]
+
+
+def rf_auth(request: web.Request):
+    uid = check_init_data(request.headers.get("X-Init-Data", ""), TOKEN2)
+    if uid:
+        return uid
+    u, s = request.headers.get("X-Rf-U", ""), request.headers.get("X-Rf-S", "")
+    if u.isdigit() and s and hmac.compare_digest(s, rf_sign(int(u))):
+        return int(u)
+    return None
+
+
+async def rf_get(rid: str):
+    d = await store_get(f"raffles/{rid}")
+    return d if isinstance(d, dict) else None
+
+
+async def rf_tickets(rid: str) -> list:
+    d = await store_all(f"raffle_t_{rid}")
+    return sorted((v for v in (d or {}).values() if isinstance(v, dict)), key=lambda t: t.get("n", 0))
+
+
+async def rf_issue(raf: dict, uid: int, name: str):
+    """Выдаёт билет (номер + случайный код из 6 символов). None — если лимит исчерпан."""
+    async with rf_lock:
+        tickets = await rf_tickets(raf["id"])
+        if sum(1 for t in tickets if t.get("uid") == uid) >= RF_MAX_TICKETS:
+            return None
+        n = max([t.get("n", 0) for t in tickets] or [0]) + 1
+        code = ""
+        for _ in range(60):
+            code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+            if not await store_get(f"rticket/{code}"):
+                break
+        t = {"n": n, "code": code, "uid": uid, "name": (name or "Участник")[:40], "rid": raf["id"], "ts": int(time.time())}
+        await store_set(f"raffle_t_{raf['id']}/t{n}", t)
+        await store_set(f"rticket/{code}", t)
+    return t
+
+
+def rf_ticket_text(raf: dict, t: dict) -> str:
+    return (f"🎟 Билет №{t['n']}\nПромокод: {t['code']}\n\n"
+            f"Розыгрыш «{raf['title']}» · старт {rf_fmt(raf['start'])} (Таджикистан)\n"
+            "Сохраните промокод — по нему вы получите приз, если выиграете.")
+
+
+def rf_prizes_text(raf: dict) -> str:
+    return "\n".join(f"{rf_medal(p['place'])} {p['place']} место — {p['days']} дн. Business Pro" for p in raf.get("prizes") or [])
+
+
+def rf_cond_text(raf: dict) -> str:
+    c = []
+    if raf.get("channels"):
+        c.append("подписаться на: " + ", ".join(ch.get("title") or ch["chat"] for ch in raf["channels"]))
+    if raf.get("price"):
+        c.append(f"купить билет за {raf['price']} TJS")
+    return "• " + "\n• ".join(c) if c else "• нажать «Участвовать» — билет выдаётся бесплатно"
+
+
+def rf_card_text(raf: dict) -> str:
+    return (f"🎁 {raf['title']}\n\n{raf.get('text') or ''}\n\n🏆 Призы:\n{rf_prizes_text(raf)}\n\n"
+            f"📋 Условия участия:\n{rf_cond_text(raf)}\n\n🕐 Розыгрыш: {rf_fmt(raf['start'])} (Таджикистан)")[:1020]
+
+
+def rf_app_url(uid: int | None = None, rid: str = "", uname: str = "") -> str:
+    q = []
+    if uname:
+        q.append("bot=" + uname)
+    if rid:
+        q.append("rf=" + rid)
+    if uid:
+        q += [f"u={uid}", f"s={rf_sign(uid)}"]
+    return f"{WEBAPP_URL}/instaflow" + ("?" + "&".join(q) if q else "")
+
+
+async def rf_missing(raf: dict, uid: int):
+    """(список каналов без подписки, ошибка). Если бот не админ канала — ошибка."""
+    miss = []
+    for ch in raf.get("channels") or []:
+        chat = int(ch["chat"]) if str(ch["chat"]).lstrip("-").isdigit() else ch["chat"]
+        try:
+            m = await BOT2.get_chat_member(chat, uid)
+        except Exception as e:
+            return None, f"{ch.get('title') or ch['chat']}: {str(e)[:100]}"
+        if m.status in ("left", "kicked") or (m.status == "restricted" and not getattr(m, "is_member", True)):
+            miss.append(ch)
+    return miss, ""
+
+
+# ---------- участие ----------
+async def rf_flow(send, uid: int, user, rid: str):
+    """send(text, reply_markup) — отправка пользователю. Показывает нужный шаг участия."""
+    raf = await rf_get(rid)
+    if not raf or raf.get("status") != "open" or time.time() >= raf["start"]:
+        return await send("⏰ Приём участников в этом розыгрыше закончен.", None)
+    tickets = [t for t in await rf_tickets(rid) if t.get("uid") == uid]
+    miss, err = await rf_missing(raf, uid)
+    if miss is None:
+        await notify_admins(BOT2, f"⚠️ Розыгрыш «{raf['title']}»: не могу проверить подписку — {err}\nДобавьте бота в админы канала.", key=f"rf_err_{rid}")
+        return await send("⚠️ Сейчас не получается проверить подписку. Попробуйте чуть позже.", None)
+    if miss:
+        rows = [[_b("📢 " + (ch.get("title") or ch["chat"])[:40], url=ch["url"])] for ch in miss]
+        rows.append([_b("✅ Проверить подписку", f"rf:j:{rid}")])
+        return await send("Чтобы участвовать, подпишитесь на каналы и нажмите «Проверить подписку» 👇", _kb(rows))
+    if raf.get("price"):
+        rows = [[_b(f"🛒 Купить билет за {raf['price']} TJS", f"rf:b:{rid}")]]
+        if tickets:
+            mine = ", ".join(f"№{t['n']}" for t in tickets)
+            return await send(f"✅ Вы участвуете. Ваши билеты: {mine}.\nМожно купить ещё (до {RF_MAX_TICKETS}) — шансов больше.", _kb(rows))
+        return await send(f"Чтобы стать участником розыгрыша, купите билет за {raf['price']} TJS.", _kb(rows))
+    if tickets:
+        return await send(rf_ticket_text(raf, tickets[0]), None)
+    t = await rf_issue(raf, uid, user.full_name)
+    if not t:
+        return await send("Лимит билетов исчерпан.", None)
+    await send("✅ Условия выполнены — вы участвуете!\n\n" + rf_ticket_text(raf, t), None)
+
+
+@dp2.callback_query(F.data.startswith("rf:j:"))
+async def rf_join_cb(call: CallbackQuery):
+    await call.answer()
+    msg = call.message
+
+    async def send(text, kb):
+        return await msg.answer(text, reply_markup=kb)
+    await rf_flow(send, call.from_user.id, call.from_user, call.data.split(":")[2])
+
+
+# ---------- оплата билета ----------
+def rf_cancel_kb(pid: str):
+    return _kb([[_b("❌ Отмена", f"rf:x:{pid}")]])
+
+
+async def rf_pay_awaiting(uid: int):
+    pid = await store_get(f"rf_pend/{uid}")
+    if not isinstance(pid, str) or not pid:
+        return None
+    p = await store_get(f"rpay/{pid}")
+    if isinstance(p, dict) and p.get("status") == "awaiting" and p.get("uid") == uid:
+        return p
+    return None
+
+
+@dp2.callback_query(F.data.startswith("rf:b:"))
+async def rf_buy_cb(call: CallbackQuery):
+    await call.answer()
+    uid = call.from_user.id
+    rid = call.data.split(":")[2]
+    raf = await rf_get(rid)
+    if not raf or raf.get("status") != "open" or time.time() >= raf["start"]:
+        return await call.message.answer("⏰ Приём участников в этом розыгрыше закончен.")
+    if not ADMIN_IDS:
+        return await call.message.answer(f"Оплата временно недоступна. Напишите в поддержку {SUPPORT_USER}.", reply_markup=support_kb())
+    miss, _ = await rf_missing(raf, uid)
+    if miss:
+        return await rf_flow(lambda t, k: call.message.answer(t, reply_markup=k), uid, call.from_user, rid)
+    mine = [t for t in await rf_tickets(rid) if t.get("uid") == uid]
+    if len(mine) >= RF_MAX_TICKETS:
+        return await call.message.answer(f"Вы уже купили максимум билетов ({RF_MAX_TICKETS}).")
+    old_id = await store_get(f"rf_pend/{uid}")
+    if isinstance(old_id, str):
+        old = await store_get(f"rpay/{old_id}")
+        if isinstance(old, dict):
+            if old.get("status") == "review":
+                return await call.message.answer(f"⏳ Ваш предыдущий платёж ещё проверяется. Подождите до 10 минут.\n\nЕсли что-то не так — {SUPPORT_USER}",
+                                                 reply_markup=support_kb())
+            if old.get("status") == "awaiting":
+                await store_update(f"rpay/{old_id}", {"status": "cancelled"})
+                for mid in (old.get("msg_id"),):
+                    try:
+                        if mid:
+                            await BOT2.delete_message(old.get("chat") or uid, mid)
+                    except Exception:
+                        pass
+    pid = uuid.uuid4().hex[:10]
+    m = await call.message.answer(
+        f"💳 Оплата билета\n\n🎁 Розыгрыш: {raf['title']}\n💰 Сумма: {raf['price']} TJS\n\n"
+        "Чтобы стать участником, переведите сумму по номеру телефона:\n"
+        f"• DC City: {PAY_DC}\n• Alif Mobi: {PAY_ALIF}\n\n"
+        "📸 После оплаты перешлите чек (скриншот) сюда, в этот чат.",
+        reply_markup=rf_cancel_kb(pid))
+    u = call.from_user
+    await store_set(f"rpay/{pid}", {"id": pid, "uid": uid, "rid": rid, "amount": raf["price"], "status": "awaiting",
+                                    "created": int(time.time()), "name": u.full_name, "username": u.username or "",
+                                    "chat": m.chat.id, "msg_id": m.message_id})
+    await store_set(f"rf_pend/{uid}", pid)
+
+
+@dp2.callback_query(F.data.startswith("rf:x:"))
+async def rf_cancel_cb(call: CallbackQuery):
+    await call.answer()
+    pid = call.data.split(":")[2]
+    p = await store_get(f"rpay/{pid}")
+    if isinstance(p, dict) and p.get("status") == "awaiting" and p.get("uid") == call.from_user.id:
+        await store_update(f"rpay/{pid}", {"status": "cancelled"})
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+
+def rf_admin_pay_kb(pid: str):
+    return _kb([[_b("✅ Подтвердить", f"rp:ok:{pid}"), _b("❌ Отклонить", f"rp:no:{pid}")]])
+
+
+async def rf_receipt(message: Message, pay: dict):
+    uid = message.from_user.id
+    if message.photo:
+        kind, fid = "photo", message.photo[-1].file_id
+    else:
+        kind, fid = "document", message.document.file_id
+    if pay.get("msg_id"):  # прежнее сообщение с реквизитами и кнопкой «Отмена»
+        try:
+            await BOT2.delete_message(pay.get("chat") or uid, pay["msg_id"])
+        except Exception:
+            pass
+    wait = await message.answer(f"⏳ Оплата в проверке. Это займёт от 5 до 10 минут, пожалуйста, ждите.\n\nЕсли что-то не так — {SUPPORT_USER}",
+                                reply_markup=support_kb())
+    raf = await rf_get(pay["rid"]) or {}
+    card = (f"🎟 Оплата билета #{pay['id']}\n\n🎁 {raf.get('title', '?')}\n"
+            f"👤 {pay.get('name') or '—'}" + (f" (@{pay['username']})" if pay.get("username") else "") + f"\n🆔 {uid}\n"
+            f"💰 {pay['amount']} TJS\n🕐 " + time.strftime("%d.%m %H:%M", time.gmtime(time.time() + TZ_OFFSET)))
+    adm: dict[str, int] = {}
+    for aid in ADMIN_IDS:
+        try:
+            if kind == "photo":
+                m = await BOT2.send_photo(aid, fid, caption=card, reply_markup=rf_admin_pay_kb(pay["id"]))
+            else:
+                m = await BOT2.send_document(aid, fid, caption=card, reply_markup=rf_admin_pay_kb(pay["id"]))
+            adm[str(aid)] = m.message_id
+        except Exception:
+            logging.warning("Не удалось отправить чек розыгрыша админу %s", aid)
+    if not adm:
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        return await message.answer(f"❌ Не удалось передать чек. Отправьте его ещё раз или напишите в поддержку {SUPPORT_USER}.",
+                                    reply_markup=support_kb())
+    await store_update(f"rpay/{pay['id']}", {"status": "review", "file_id": fid, "kind": kind, "card": card, "adm": adm,
+                                             "wait_msg": wait.message_id, "wait_chat": wait.chat.id, "submitted": int(time.time())})
+    try:  # фото чека у пользователя убираем: оно уже у админа
+        await message.delete()
+    except Exception:
+        pass
+
+
+async def rf_pay_cards(pay: dict, status: str):
+    for aid, mid in (pay.get("adm") or {}).items():
+        try:
+            await BOT2.edit_message_caption(chat_id=int(aid), message_id=int(mid), caption=(pay.get("card") or "")[:900] + "\n\n" + status,
+                                            reply_markup=None)
+        except Exception:
+            pass
+
+
+async def rf_pay_clear(pay: dict):
+    if pay.get("wait_msg"):
+        try:
+            await BOT2.delete_message(int(pay.get("wait_chat") or pay["uid"]), int(pay["wait_msg"]))
+        except Exception:
+            pass
+
+
+@dp2.callback_query(F.data.startswith("rp:"))
+async def rf_pay_admin_cb(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("Только для администратора", show_alert=True)
+    _, act, pid = call.data.split(":")
+    pay = await store_get(f"rpay/{pid}")
+    if not isinstance(pay, dict) or pay.get("status") != "review":
+        await call.answer("Уже обработан", show_alert=True)
+        return
+    uid = pay["uid"]
+    raf = await rf_get(pay["rid"])
+    admin = call.from_user
+    if act == "ok":
+        if not raf or raf.get("status") != "open" or time.time() >= raf["start"]:
+            return await call.answer("Розыгрыш уже начался или закрыт — билет выдать нельзя. Верните деньги вручную.", show_alert=True)
+        t = await rf_issue(raf, uid, pay.get("name") or "")
+        if not t:
+            return await call.answer("У этого пользователя уже максимум билетов.", show_alert=True)
+        await call.answer()
+        await store_update(f"rpay/{pid}", {"status": "approved", "decided": int(time.time()), "admin": admin.id, "ticket": t["n"]})
+        await store_set(f"rf_pend/{uid}", "")
+        await rf_pay_cards(pay, f"✅ Подтверждён ({admin.full_name}) · билет №{t['n']}")
+        await rf_pay_clear(pay)
+        try:
+            await BOT2.send_message(uid, "✅ Оплата подтверждена! Теперь вы участвуете в розыгрыше.\n\n" + rf_ticket_text(raf, t))
+        except Exception:
+            await call.message.answer("⚠️ Не удалось написать пользователю (он мог заблокировать бота).")
+    else:
+        await call.answer()
+        await store_update(f"rpay/{pid}", {"status": "rejected", "decided": int(time.time()), "admin": admin.id})
+        await store_set(f"rf_pend/{uid}", "")
+        await rf_pay_cards(pay, f"❌ Отклонён ({admin.full_name})")
+        await rf_pay_clear(pay)
+        try:
+            await BOT2.send_message(uid, f"❌ Платёж за билет отклонён. Если вы оплатили — напишите в поддержку {SUPPORT_USER}",
+                                    reply_markup=support_kb())
+        except Exception:
+            pass
+
+
+# ---------- рассылка, старт, финал ----------
+async def rf_broadcast(raf: dict, kind: str):
+    """kind: 'ann' — анонс с кнопкой «Участвовать»; 'live' — «Розыгрыш начался»; 'end' — итоги (участникам)."""
+    rid = raf["id"]
+    if kind == "end":
+        uids = sorted({t["uid"] for t in await rf_tickets(rid)})
+    else:
+        uids = [int(k) for k in (await store_all("clients") or {}) if str(k).isdigit()]
+    uname = (await BOT2.me()).username
+    ok = fail = 0
+    for uid in uids:
+        try:
+            if kind == "ann":
+                rows = [[_b("🎟 Участвовать", f"rf:j:{rid}")]]
+                if WEBAPP_URL:
+                    rows.append([InlineKeyboardButton(text="🎁 Подробнее", web_app=WebAppInfo(url=rf_app_url(uid, rid, uname)))])
+                kb = _kb(rows)
+                if raf.get("fid"):
+                    await BOT2.send_photo(uid, raf["fid"], caption=rf_card_text(raf), reply_markup=kb)
+                else:
+                    await BOT2.send_message(uid, rf_card_text(raf), reply_markup=kb)
+            elif kind == "live":
+                kb = _kb([[InlineKeyboardButton(text="👀 Посмотреть", web_app=WebAppInfo(url=rf_app_url(uid, rid, uname)))]]) if WEBAPP_URL else None
+                await BOT2.send_message(uid, f"🎬 Розыгрыш «{raf['title']}» начался! Нажмите «Посмотреть» — шарики уже падают.", reply_markup=kb)
+            else:
+                res = await store_get(f"raffle_res/{rid}") or {}
+                lines = [f"{rf_medal(w['place'])} {w['place']} место — {w['name']} (билет №{w['n']})" for w in res.get("winners") or []]
+                await BOT2.send_message(uid, f"🏁 Розыгрыш «{raf['title']}» завершён!\n\nПобедители:\n" + ("\n".join(lines) or "—"))
+            ok += 1
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after + 1)
+            fail += 1
+        except Exception:
+            fail += 1
+        await asyncio.sleep(0.05)
+    return ok, fail
+
+
+async def rf_start(raf: dict):
+    rid = raf["id"]
+    async with rf_lock:
+        raf = await rf_get(rid)
+        if not raf or raf.get("status") != "open":
+            return
+        tickets = await rf_tickets(rid)
+        res = rf_draw(tickets, len(raf.get("prizes") or []))
+        now = int(time.time())
+        res["started"] = now
+        res["started_ms"] = int(time.time() * 1000)
+        await store_set(f"raffle_res/{rid}", res)
+        await store_update(f"raffles/{rid}", {"status": "live", "live_ts": now, "end_ts": now + res["duration_ms"] // 1000 + 5})
+    await notify_admins(BOT2, f"🎬 Розыгрыш «{raf['title']}» начался. Билетов: {len(tickets)}. Победители узнают результат через ~{res['duration_ms'] // 60000 + 1} мин.")
+    ok, fail = await rf_broadcast(raf, "live")
+    await notify_admins(BOT2, f"📣 «Розыгрыш начался» отправлено: {ok}, не доставлено: {fail}")
+
+
+async def rf_finish(raf: dict):
+    rid = raf["id"]
+    raf = await rf_get(rid)
+    if not raf or raf.get("status") != "live":
+        return
+    await store_update(f"raffles/{rid}", {"status": "finished"})
+    RF_ACTIVE.discard(rid)
+    res = await store_get(f"raffle_res/{rid}") or {}
+    prizes = {p["place"]: p["days"] for p in raf.get("prizes") or []}
+    tickets = {t["n"]: t for t in await rf_tickets(rid)}
+    for w in res.get("winners") or []:
+        t = tickets.get(w["n"])
+        if not t:
+            continue
+        days = prizes.get(w["place"], 0)
+        await store_update(f"rticket/{t['code']}", {"place": w["place"], "days": days, "claimed": False})
+        await store_update(f"rwin/{t['uid']}", {t["code"]: True})
+        try:
+            await BOT2.send_message(
+                t["uid"], f"🏆 Поздравляем! Вы стали победителем розыгрыша «{raf['title']}»!\n\n"
+                          f"{rf_medal(w['place'])} {w['place']} место (билет №{t['n']})\nПриз: {days} дн. Business Pro\n\n"
+                          "Чтобы получить приз, отправьте в этот чат промокод из вашего билета (6 символов).")
+        except Exception:
+            logging.warning("Не удалось написать победителю %s", t["uid"])
+    ok, fail = await rf_broadcast(raf, "end")
+    await notify_admins(BOT2, f"🏁 Розыгрыш «{raf['title']}» завершён. Итоги отправлены участникам: {ok}.")
+
+
+async def rf_loop():
+    while True:
+        try:
+            for rid in list(RF_ACTIVE):
+                raf = await rf_get(rid)
+                if not raf:
+                    RF_ACTIVE.discard(rid)
+                    continue
+                now = time.time()
+                if raf.get("status") == "open" and now >= raf["start"]:
+                    await rf_start(raf)
+                elif raf.get("status") == "live" and now >= raf.get("end_ts", 0):
+                    await rf_finish(raf)
+                elif raf.get("status") not in ("open", "live"):
+                    RF_ACTIVE.discard(rid)
+        except Exception:
+            logging.exception("rf_loop")
+        await asyncio.sleep(10)
+
+
+async def rf_load_active():
+    try:
+        for rid, r in (await store_all("raffles") or {}).items():
+            if isinstance(r, dict) and r.get("status") in ("open", "live"):
+                RF_ACTIVE.add(rid)
+    except Exception:
+        logging.exception("rf_load_active")
+
+
+async def grant_pro_days(uid: int, days: int) -> int:
+    sub = await get_sub(uid, fresh=True)
+    now = int(time.time())
+    base = max(now, int(sub.get("until") or 0)) if tier_of(sub) == "pro" else now
+    until = base + days * 86400
+    await sub_update(uid, plan="pro", until=until, intro_used=True)
+    await client_update(uid, plan="pro", until=until)
+    return until
+
+
+async def rf_claim_core(uid: int, text: str):
+    """(None, '') — не похоже на промокод победителя; ('ok'|'err', сообщение) — обработано."""
+    code = text.strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{6}", code):
+        return None, ""
+    wins = await store_get(f"rwin/{uid}")
+    if not isinstance(wins, dict) or not wins:
+        return None, ""
+    t = await store_get(f"rticket/{code}")
+    if not isinstance(t, dict):
+        return "err", "❌ Промокод не найден. Проверьте и отправьте ещё раз."
+    if t.get("uid") != uid or not t.get("place"):
+        return "err", "❌ Этот промокод не даёт приза для вашего аккаунта."
+    if t.get("claimed"):
+        return "err", "ℹ️ Приз по этому промокоду уже получен."
+    days = int(t.get("days") or 0)
+    until = await grant_pro_days(uid, days)
+    await store_update(f"rticket/{code}", {"claimed": True, "claimed_ts": int(time.time())})
+    return "ok", f"🎉 Промокод принят! {t['place']} место — {days} дн. Business Pro активны до {fdate(until)}."
+
+
+async def rf_try_claim(message: Message, text: str) -> bool:
+    """Победитель присылает промокод билета → бот проверяет и выдаёт приз. True — сообщение обработано."""
+    status, msg = await rf_claim_core(message.from_user.id, text)
+    if not status:
+        return False
+    await message.answer(msg, reply_markup=ig_menu_kb(message.from_user.id) if status == "ok" else None)
+    return True
+
+
+# ---------- админ: создание розыгрыша ----------
+RF_Q = {
+    "rf_photo": "🖼 Пришлите фото розыгрыша (или «-» без фото).",
+    "rf_text": "✍️ Пришлите текст розыгрыша. Первая строка — заголовок (до 600 символов всего).",
+    "rf_price": "💰 Цена билета в TJS (например 5). Если билеты бесплатные — 0.",
+    "rf_channels": "📢 Каналы для обязательной подписки — по одному в строке: @channel или t.me/channel.\nБот должен быть админом канала. Нет условий — «-».",
+    "rf_prizes": "🏆 Призы — по строке на место: «место дни Pro».\nПример:\n1 30\n2 20\n3 10",
+    "rf_start": "🕐 Когда начать розыгрыш (время Таджикистана, UTC+5). Формат: ДД.ММ.ГГГГ ЧЧ:ММ\nПример: 25.11.2026 20:00",
+}
+
+
+def rf_admin_list_kb(items: list):
+    rows = [[_b("➕ Создать розыгрыш", "rf:new")]]
+    for r in items[:10]:
+        st = {"open": "🟢", "live": "🎬", "finished": "🏁", "cancelled": "⛔"}.get(r.get("status"), "•")
+        rows.append([_b(f"{st} {r['title'][:30]} · {rf_fmt(r['start'])}", f"rf:a:{r['id']}")])
+    return _kb(rows)
+
+
+@dp2.message(Command("raffle"))
+async def rf_admin_cmd(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    ig_wait.pop(message.from_user.id, None)
+    items = sorted([r for r in (await store_all("raffles") or {}).values() if isinstance(r, dict)], key=lambda r: -r.get("created", 0))
+    await message.answer("🎁 Розыгрыши" + ("" if items else "\nПока нет ни одного."), reply_markup=rf_admin_list_kb(items))
+
+
+@dp2.callback_query(F.data.startswith("rf:"))  # j/b/x обработаны выше
+async def rf_admin_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    if uid not in ADMIN_IDS:
+        return await call.answer("Только для администратора", show_alert=True)
+    await call.answer()
+    parts = call.data.split(":")
+    act = parts[1]
+    if act == "new":
+        ig_wait[uid] = {"step": "rf_photo", "data": {}}
+        return await call.message.answer("🎁 Новый розыгрыш. Отмена: /cancel\n\n" + RF_Q["rf_photo"])
+    if act == "abort":
+        ig_wait.pop(uid, None)
+        return await call.message.answer("Отменено.")
+    if act == "pub":
+        w = ig_wait.pop(uid, None)
+        if not w or w.get("step") != "rf_confirm":
+            return await call.message.answer("Это окно устарело. Создайте розыгрыш заново: /raffle")
+        d = w["data"]
+        rid = uuid.uuid4().hex[:8]
+        raf = {"id": rid, "title": d["title"], "text": d["text"], "img": d.get("img", ""), "fid": d.get("fid", ""), "price": d["price"],
+               "channels": d["channels"], "prizes": d["prizes"], "start": d["start"], "status": "open", "created": int(time.time())}
+        await store_set(f"raffles/{rid}", raf)
+        RF_ACTIVE.add(rid)
+        await call.message.answer("🚀 Розыгрыш опубликован, рассылаю анонс всем пользователям…")
+
+        async def run():
+            ok, fail = await rf_broadcast(raf, "ann")
+            await notify_admins(BOT2, f"📣 Анонс «{raf['title']}» отправлен: {ok}, не доставлено: {fail}")
+        return bg(run())
+    rid = parts[2] if len(parts) > 2 else ""
+    raf = await rf_get(rid)
+    if not raf:
+        return await call.message.answer("Розыгрыш не найден.")
+    if act == "a":
+        tks = await rf_tickets(rid)
+        res = await store_get(f"raffle_res/{rid}") or {}
+        txt = (f"🎁 {raf['title']}\nСтатус: {raf.get('status')}\nСтарт: {rf_fmt(raf['start'])}\n"
+               f"Билетов: {len(tks)} · участников: {len({t['uid'] for t in tks})}\nЦена билета: {raf.get('price') or 'бесплатно'}\n")
+        if res.get("winners"):
+            txt += "\nПобедители:\n" + "\n".join(f"{w['place']}. {w['name']} — билет №{w['n']}" for w in res["winners"])
+        rows = []
+        if raf.get("status") == "open":
+            rows.append([_b("▶️ Запустить сейчас", f"rf:go:{rid}")])
+            rows.append([_b("🛑 Отменить розыгрыш", f"rf:del:{rid}")])
+        return await call.message.answer(txt, reply_markup=_kb(rows) if rows else None)
+    if act == "go" and raf.get("status") == "open":
+        await store_update(f"raffles/{rid}", {"start": int(time.time())})
+        return await call.message.answer("▶️ Запускаю — розыгрыш начнётся в течение 10 секунд.")
+    if act == "del" and raf.get("status") == "open":
+        await store_update(f"raffles/{rid}", {"status": "cancelled"})
+        RF_ACTIVE.discard(rid)
+        return await call.message.answer("⛔ Розыгрыш отменён.")
+
+
+async def rf_wizard_photo(message: Message, w: dict):
+    IG_IMG_DIR.mkdir(parents=True, exist_ok=True)
+    name = uuid.uuid4().hex[:12] + ".jpg"
+    await BOT2.download(message.photo[-1], destination=IG_IMG_DIR / name)
+    w["data"].update(img=name, fid=message.photo[-1].file_id)
+    w["step"] = "rf_text"
+    await message.answer(RF_Q["rf_text"])
+
+
+async def rf_wizard_text(message: Message, w: dict, text: str):
+    step, d = w["step"], w["data"]
+    uid = message.from_user.id
+    if step == "rf_photo":
+        if text != "-":
+            return await message.answer("Пришлите фото или «-».")
+        w["step"] = "rf_text"
+        return await message.answer(RF_Q["rf_text"])
+    if step == "rf_text":
+        if len(text) > 600:
+            return await message.answer(f"Слишком длинно ({len(text)}). Максимум 600 символов.")
+        d["title"] = text.splitlines()[0].strip()[:80]
+        d["text"] = "\n".join(text.splitlines()[1:]).strip()
+        w["step"] = "rf_price"
+        return await message.answer(RF_Q["rf_price"])
+    if step == "rf_price":
+        if not re.fullmatch(r"\d{1,6}", text.strip()):
+            return await message.answer("Пришлите целое число, например 5 (или 0).")
+        d["price"] = int(text)
+        w["step"] = "rf_channels"
+        return await message.answer(RF_Q["rf_channels"])
+    if step == "rf_channels":
+        chans = []
+        if text != "-":
+            for ln in text.splitlines():
+                m = re.search(r"(?:t\.me/|@)([A-Za-z0-9_]{4,})", ln)
+                if not m:
+                    return await message.answer(f"Не понял «{ln.strip()}». Нужен публичный @канал или t.me/канал.")
+                chat = "@" + m.group(1)
+                try:
+                    info = await BOT2.get_chat(chat)
+                    me = await BOT2.get_chat_member(chat, BOT2.id)
+                except Exception as e:
+                    return await message.answer(f"❌ {chat}: {str(e)[:100]}\nДобавьте бота в админы канала и пришлите список заново.")
+                if me.status not in ("administrator", "creator"):
+                    return await message.answer(f"❌ Бот не админ в {chat}. Добавьте его и пришлите список заново.")
+                chans.append({"chat": chat, "title": info.title or chat, "url": f"https://t.me/{m.group(1)}"})
+        d["channels"] = chans
+        w["step"] = "rf_prizes"
+        return await message.answer(RF_Q["rf_prizes"])
+    if step == "rf_prizes":
+        pr = rf_parse_prizes(text)
+        if not pr:
+            return await message.answer("Не понял. По строке на место, места подряд с 1. Пример:\n1 30\n2 20\n3 10")
+        d["prizes"] = pr
+        w["step"] = "rf_start"
+        return await message.answer(RF_Q["rf_start"])
+    if step == "rf_start":
+        ts = rf_parse_time(text, TZ_OFFSET)
+        if not ts or ts <= time.time() + 60:
+            return await message.answer("Не понял дату или она в прошлом. Формат: ДД.ММ.ГГГГ ЧЧ:ММ, например 25.11.2026 20:00")
+        d["start"] = ts
+        w["step"] = "rf_confirm"
+        raf = {"title": d["title"], "text": d["text"], "price": d["price"], "channels": d["channels"], "prizes": d["prizes"], "start": ts}
+        kb = _kb([[_b("🚀 Опубликовать и разослать всем", "rf:pub")], [_b("✖️ Отмена", "rf:abort")]])
+        if d.get("fid"):
+            await message.answer_photo(d["fid"], caption="Так увидят пользователи:\n\n" + rf_card_text(raf), reply_markup=kb)
+        else:
+            await message.answer("Так увидят пользователи:\n\n" + rf_card_text(raf), reply_markup=kb)
+        return
+    if step == "rf_confirm":
+        return await message.answer("Нажмите «Опубликовать» или «Отмена» под предпросмотром.")
+
+
+# ---------- API для Mini App ----------
+async def rf_public(raf: dict, uid: int | None, full: bool) -> dict:
+    tks = await rf_tickets(raf["id"])
+    out = {"id": raf["id"], "title": raf["title"], "text": raf.get("text") or "", "status": raf.get("status"), "start": raf["start"],
+           "price": raf.get("price") or 0, "prizes": raf.get("prizes") or [], "channels": [c.get("title") for c in raf.get("channels") or []],
+           "img": (f"/img/{raf['img']}" if raf.get("img") else ""), "tickets": len(tks),
+           "mine": [{"n": t["n"], "code": t["code"]} for t in tks if uid and t.get("uid") == uid]}
+    if full and raf.get("status") in ("live", "finished"):
+        res = await store_get(f"raffle_res/{raf['id']}") or {}
+        evs = res.get("events") or []
+        done = raf.get("status") == "finished"
+        elapsed = int(time.time() * 1000) - int(res.get("started_ms") or 0)
+        out["result"] = {"events": evs if done else rf_visible(evs, elapsed), "elapsed_ms": elapsed if not done else None,
+                         "duration_ms": res.get("duration_ms"),
+                         "winners": [{k: w[k] for k in ("place", "n", "name", "mult")} for w in (res.get("winners") or [])] if done else []}
+    return out
+
+
+async def api_rf_list(request: web.Request):
+    uid = rf_auth(request)
+    items = [r for r in (await store_all("raffles") or {}).values() if isinstance(r, dict) and r.get("status") in ("open", "live", "finished")]
+    items.sort(key=lambda r: -r.get("created", 0))
+    return web.json_response({"ok": True, "now": int(time.time()), "uid": uid or 0, "timing": RF_T, "mults": RF_MULTS, "rows": RF_ROWS,
+                              "raffles": [await rf_public(r, uid, False) for r in items[:8]]})
+
+
+async def api_rf_one(request: web.Request):
+    uid = rf_auth(request)
+    raf = await rf_get(request.match_info["rid"])
+    if not raf or raf.get("status") not in ("open", "live", "finished"):
+        return web.json_response({"ok": False}, status=404)
+    return web.json_response({"ok": True, "now": int(time.time()), "uid": uid or 0, "timing": RF_T, "mults": RF_MULTS, "rows": RF_ROWS,
+                              "raffle": await rf_public(raf, uid, True)})
+
+
+# ====================== API мини-приложения (все функции бота) ======================
+def _jerr(msg: str, code: str = "err", status: int = 200):
+    return web.json_response({"ok": False, "error": code, "msg": msg}, status=status)
+
+
+async def app_ctx(request: web.Request):
+    """(uid, error_response). Авторизация: initData Telegram или подписанные u/s из адреса."""
+    uid = rf_auth(request)
+    if not uid:
+        return None, _jerr("Откройте приложение из бота", "auth", 401)
+    return uid, None
+
+
+async def app_body(request: web.Request) -> dict:
+    try:
+        d = await request.json()
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def app_rule(r) -> dict:
+    clicks = db.execute("SELECT COALESCE(SUM(clicks),0) FROM ig_links WHERE rule_id=?", (r["id"],)).fetchone()[0]
+    return {"id": r["id"], "kind": r["kind"], "keyword": r["keyword"], "media": r["media_id"], "message": r["message"],
+            "buttons": json.loads(r["buttons"] or "[]"), "pub": r["public_reply"], "follow": r["need_follow"],
+            "catalog": r["catalog"], "active": r["active"], "sent": r["sent"], "clicks": clicks}
+
+
+def app_product(p) -> dict:
+    clicks = db.execute("SELECT COALESCE(clicks,0) FROM ig_links WHERE id=?", (p["link_id"],)).fetchone()
+    return {"id": p["id"], "title": p["title"], "sub": p["subtitle"], "url": p["url"], "btn": p["btn"],
+            "img": (f"/img/{p['img']}" if p["img"] else ""), "clicks": clicks[0] if clicks else 0}
+
+
+async def api_app_me(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    sub = await get_sub(uid, fresh=True)
+    tier = tier_of(sub)
+    accs = ig_accs_of(uid)
+    acc = ig_acc_of(uid)
+    pend = None
+    pid = sub.get("pending")
+    if pid:
+        p = await store_get(f"payments/{pid}")
+        if isinstance(p, dict) and p.get("status") in ("awaiting", "review"):
+            pend = {"id": pid, "status": p["status"], "plan": p.get("plan"), "amount": p.get("amount")}
+    last = None
+    lp = sub.get("last_pay")
+    allowed = ig_login_allowed(uid)
+    cl = _kv_get(f"clients/{uid}") or {}
+    fs = sub.get("free_started")
+    return web.json_response({
+        "ok": True, "uid": uid, "name": cl.get("name") or "", "username": cl.get("username") or "", "is_admin": uid in ADMIN_IDS,
+        "tier": tier, "until": int(sub.get("until") or 0) if tier == "pro" else 0,
+        "free_until": int(fs + FREE_DAYS * 86400) if fs else 0, "free_days": FREE_DAYS,
+        "intro": intro_available(sub), "max_accounts": PRO_MAX_ACCOUNTS if tier == "pro" else 1,
+        "plans": [{"id": k, **v} for k, v in PLANS.items()], "pending": pend,
+        "pay": {"dc": PAY_DC, "alif": PAY_ALIF}, "support": SUPPORT_URL, "support_user": SUPPORT_USER,
+        "accounts": [{"ig_id": a["ig_id"], "username": a["username"], "selected": bool(acc and a["ig_id"] == acc["ig_id"])} for a in accs],
+        "login": {"allowed": allowed, "url": ig_oauth_url(uid) if allowed else None,
+                  "request": "approved" if allowed else ("pending" if uid in _req_msgs else "none")},
+        "guide": IG_SETUP_GUIDE,
+    })
+
+
+async def api_app_request(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    d = await app_body(request)
+    login = str(d.get("login") or "").strip().lstrip("@").split("?")[0].rstrip("/").split("/")[-1]
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", login):
+        return _jerr("Логин выглядит неверно. Пример: myshop")
+    if ig_login_allowed(uid):
+        return _jerr("Вход уже открыт — подключайте аккаунт")
+    if uid in _req_msgs:
+        return _jerr("Заявка уже отправлена. Подождите 5–10 минут.")
+    if not ADMIN_IDS:
+        return _jerr("Администратор не настроен")
+    cl = _kv_get(f"clients/{uid}") or {}
+    who = f"@{cl['username']}" if cl.get("username") else "без username"
+    text = ("📝 Заявка на подключение Instagram (из приложения)\n"
+            f"Instagram: @{login}\nhttps://instagram.com/{login}\n"
+            f"Telegram: {who} ({cl.get('name') or '—'}), id {uid}\n\n"
+            f"1) Нажмите «Подключить @{login}» → Добавить людей → роль «Тестер Instagram» → введите логин {login}.\n"
+            "2) Потом нажмите «Подтвердить».")
+    roles_url = f"https://developers.facebook.com/apps/{IG_APP_ID}/roles/roles/" if IG_APP_ID else "https://developers.facebook.com/apps/"
+    kb = _kb([[_b(f"🔗 Подключить @{login}", url=roles_url)],
+              [_b("✅ Подтвердить", f"g:apr:{uid}"), _b("❌ Отклонить", f"g:rej:{uid}")]])
+    sent = 0
+    for aid in ADMIN_IDS:
+        try:
+            await BOT2.send_message(aid, text, reply_markup=kb)
+            sent += 1
+        except Exception:
+            pass
+    if not sent:
+        return _jerr("Не удалось отправить заявку администратору. Попробуйте позже.")
+    _req_msgs[uid] = []
+    _req_login[uid] = login
+    return web.json_response({"ok": True})
+
+
+async def app_acc(uid: int):
+    acc = ig_acc_of(uid)
+    sub = await get_sub(uid)
+    return acc, sub, tier_of(sub) == "pro"
+
+
+async def api_app_account(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    d = await app_body(request)
+    act, ig_id = d.get("act"), str(d.get("ig_id") or "")
+    a = ig_acc(ig_id)
+    if not a or a["owner"] != uid:
+        return _jerr("Аккаунт не найден")
+    if act == "select":
+        dbx("INSERT OR REPLACE INTO ig_sel(owner, ig_id) VALUES(?,?)", (uid, a["ig_id"]))
+    elif act == "disconnect":
+        for tbl in ("ig_rules", "ig_contacts", "ig_events", "ig_followers", "ig_links", "ig_log", "ig_products"):
+            dbx(f"DELETE FROM {tbl} WHERE ig_id=?", (a["ig_id"],))
+        dbx("DELETE FROM ig_accounts WHERE ig_id=?", (a["ig_id"],))
+    else:
+        return _jerr("Неизвестное действие")
+    return web.json_response({"ok": True})
+
+
+async def api_app_media(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    acc = ig_acc_of(uid)
+    if not acc:
+        return _jerr("Сначала подключите Instagram", "noacc")
+    try:
+        r = await ig_call("GET", ig_url(acc, f"/{acc['ig_id']}/media"), acc["token"],
+                          params={"fields": "id,caption,media_type,thumbnail_url,media_url", "limit": 12})
+        posts = [{"id": p["id"], "cap": (p.get("caption") or "без подписи")[:60],
+                  "img": p.get("thumbnail_url") or (p.get("media_url") if p.get("media_type") == "IMAGE" else "") or ""}
+                 for p in (r.get("data") or [])]
+    except Exception:
+        posts = []
+    return web.json_response({"ok": True, "posts": posts})
+
+
+async def api_app_rules(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    acc = ig_acc_of(uid)
+    if not acc:
+        return web.json_response({"ok": True, "rules": [], "products": 0})
+    rules = db.execute("SELECT * FROM ig_rules WHERE ig_id=? ORDER BY id DESC LIMIT 60", (acc["ig_id"],)).fetchall()
+    return web.json_response({"ok": True, "rules": [app_rule(r) for r in rules], "products": len(ig_products(acc))})
+
+
+async def api_app_rule_new(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    acc, sub, pro = await app_acc(uid)
+    if not acc:
+        return _jerr("Сначала подключите Instagram", "noacc")
+    d = await app_body(request)
+    kind = d.get("kind")
+    if kind not in IG_KIND_NAME:
+        return _jerr("Неизвестный тип")
+    if not pro:
+        if kind != "comment":
+            return _jerr("Эта автоматизация доступна на Business Pro", "pro")
+        if tier_of(sub) == "expired":
+            return _jerr(f"Free-период ({FREE_DAYS} дня) закончился", "pro")
+        if db.execute("SELECT COUNT(*) FROM ig_rules WHERE ig_id=? AND kind='comment'", (acc["ig_id"],)).fetchone()[0] >= 1:
+            return _jerr("На Free доступна одна автоматизация. Удалите старую или подключите Business Pro.", "pro")
+    if kind == "menu" and db.execute("SELECT COUNT(*) FROM ig_rules WHERE ig_id=? AND kind='menu'", (acc["ig_id"],)).fetchone()[0] >= 4:
+        return _jerr("Instagram разрешает максимум 4 кнопки меню")
+    kw = str(d.get("keyword") or "").strip()[:100]
+    if kind == "story_mention":
+        kw = "*"
+    if not kw:
+        return _jerr("Укажите слово" if kind != "menu" else "Укажите название кнопки")
+    msg = str(d.get("message") or "").strip()
+    pub = str(d.get("pub") or "").strip()[:600]
+    if not pro:
+        msg, pub_only = "", True
+        if not pub:
+            return _jerr("На Free нужен текст публичного ответа под комментарием")
+    elif not msg:
+        return _jerr("Напишите сообщение для Direct")
+    if len(msg) > 640:
+        return _jerr("Сообщение длиннее 640 символов")
+    media = str(d.get("media") or "")
+    if kind == "comment" and not pro and not media:
+        return _jerr("На Free выберите один пост", "err")
+    link_ids = []
+
+    def _link(url: str) -> str:
+        lid = uuid.uuid4().hex[:8]
+        dbx("INSERT INTO ig_links(id, url, ig_id, rule_id) VALUES(?,?,?,0)", (lid, url, acc["ig_id"]))
+        link_ids.append(lid)
+        return lid
+
+    def _url(u: str):
+        u = (u or "").strip()
+        if not u.startswith("http"):
+            if "." in u and " " not in u:
+                u = "https://" + u
+            else:
+                return None
+        return u
+
+    buttons = []
+    if pro:
+        for b in (d.get("buttons") or [])[:3]:
+            t = str(b.get("t") or "")[:20].strip()
+            if not t:
+                continue
+            if b.get("n"):
+                nm = str(b["n"].get("m") or "").strip()[:640]
+                if not nm:
+                    return _jerr(f"Кнопка «{t}»: пустое второе сообщение")
+                sb = []
+                for x in (b["n"].get("b") or [])[:2]:
+                    u = _url(x.get("u"))
+                    if u:
+                        sb.append({"t": str(x.get("t") or "Открыть")[:20], "u": u, "l": _link(u)})
+                buttons.append({"t": t, "n": {"m": nm, "b": sb}})
+            else:
+                u = _url(b.get("u"))
+                if not u:
+                    return _jerr(f"Кнопка «{t}»: неверная ссылка")
+                buttons.append({"t": t, "u": u, "l": _link(u)})
+    cur = dbx("INSERT INTO ig_rules(ig_id, kind, keyword, media_id, message, buttons, public_reply, need_follow, catalog, created) "
+              "VALUES(?,?,?,?,?,?,?,?,?,?)",
+              (acc["ig_id"], kind, kw, media, msg, json.dumps(buttons, ensure_ascii=False), pub,
+               1 if (pro and d.get("follow")) else 0, 1 if (pro and d.get("catalog") and ig_products(acc)) else 0, int(time.time())))
+    for lid in link_ids:
+        dbx("UPDATE ig_links SET rule_id=? WHERE id=?", (cur.lastrowid, lid))
+    warn = ""
+    if kind == "menu":
+        e = await ig_sync_menu(acc)
+        warn = f"Меню в Instagram не обновилось: {e[:150]}" if e else ""
+    if not pro and kind == "comment" and not sub.get("free_started"):
+        await sub_update(uid, free_started=int(time.time()))
+    return web.json_response({"ok": True, "id": cur.lastrowid, "warn": warn})
+
+
+async def api_app_rule_act(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    acc = ig_acc_of(uid)
+    d = await app_body(request)
+    if not acc:
+        return _jerr("Нет аккаунта", "noacc")
+    r = db.execute("SELECT * FROM ig_rules WHERE id=? AND ig_id=?", (int(d.get("id") or 0), acc["ig_id"])).fetchone()
+    if not r:
+        return _jerr("Автоматизация не найдена")
+    if d.get("act") == "toggle":
+        dbx("UPDATE ig_rules SET active=1-active WHERE id=?", (r["id"],))
+    elif d.get("act") == "delete":
+        dbx("DELETE FROM ig_rules WHERE id=?", (r["id"],))
+        dbx("DELETE FROM ig_links WHERE rule_id=?", (r["id"],))
+    else:
+        return _jerr("Неизвестное действие")
+    warn = ""
+    if r["kind"] == "menu":
+        e = await ig_sync_menu(acc)
+        warn = f"Меню в Instagram не обновилось: {e[:150]}" if e else ""
+    return web.json_response({"ok": True, "warn": warn})
+
+
+async def api_app_dm(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    acc, sub, pro = await app_acc(uid)
+    if not acc:
+        return _jerr("Сначала подключите Instagram", "noacc")
+    if request.method == "POST":
+        if not pro:
+            return _jerr("Автоответчик доступен на Business Pro", "pro")
+        d = await app_body(request)
+        for key, col in (("welcome", "welcome"), ("dflt", "dflt")):
+            if key in d:
+                dbx(f"UPDATE ig_accounts SET {col}=?, {col}_on=? WHERE ig_id=?",
+                    (str(d[key] or "")[:1000], 1 if (d.get(key + "_on") and str(d[key] or "").strip()) else 0, acc["ig_id"]))
+        acc = ig_acc_of(uid)
+    return web.json_response({"ok": True, "welcome": acc["welcome"] or "", "welcome_on": acc["welcome_on"],
+                              "dflt": acc["dflt"] or "", "dflt_on": acc["dflt_on"]})
+
+
+async def api_app_catalog(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    acc, sub, pro = await app_acc(uid)
+    if not acc:
+        return _jerr("Сначала подключите Instagram", "noacc")
+    if not pro:
+        return _jerr("Каталог доступен на Business Pro", "pro")
+    if request.method == "POST":
+        ctype = request.content_type or ""
+        if ctype.startswith("multipart"):  # добавить товар
+            if len(ig_products(acc)) >= 10:
+                return _jerr("Максимум 10 товаров")
+            f = await request.post()
+            title = str(f.get("title") or "").strip()[:80]
+            sub_t = str(f.get("sub") or "").strip()[:80]
+            url = str(f.get("url") or "").strip()
+            btn = (str(f.get("btn") or "").strip() or "Купить")[:20]
+            if not title or not url.startswith("http"):
+                return _jerr("Нужны название и ссылка (https://…)")
+            img = ""
+            fld = f.get("photo")
+            if fld is not None and hasattr(fld, "file"):
+                data = fld.file.read()
+                if data and len(data) < 8 * 1024 * 1024:
+                    IG_IMG_DIR.mkdir(parents=True, exist_ok=True)
+                    img = uuid.uuid4().hex[:12] + ".jpg"
+                    (IG_IMG_DIR / img).write_bytes(data)
+            lid = uuid.uuid4().hex[:8]
+            cur = dbx("INSERT INTO ig_products(ig_id, title, subtitle, img, url, btn, link_id, created) VALUES(?,?,?,?,?,?,?,?)",
+                      (acc["ig_id"], title, sub_t, img, url, btn, lid, int(time.time())))
+            dbx("INSERT INTO ig_links(id, url, ig_id, rule_id) VALUES(?,?,?,?)", (lid, url, acc["ig_id"], -cur.lastrowid))
+        else:
+            d = await app_body(request)
+            p = db.execute("SELECT * FROM ig_products WHERE id=? AND ig_id=?", (int(d.get("id") or 0), acc["ig_id"])).fetchone()
+            if p and d.get("act") == "delete":
+                dbx("DELETE FROM ig_products WHERE id=?", (p["id"],))
+                dbx("DELETE FROM ig_links WHERE id=?", (p["link_id"],))
+                if p["img"]:
+                    try:
+                        (IG_IMG_DIR / p["img"]).unlink()
+                    except OSError:
+                        pass
+    return web.json_response({"ok": True, "products": [app_product(p) for p in ig_products(acc)]})
+
+
+async def api_app_stats(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    acc, sub, pro = await app_acc(uid)
+    if not acc:
+        return _jerr("Сначала подключите Instagram", "noacc")
+    if not pro:
+        return _jerr("Статистика доступна на Business Pro", "pro")
+    since = int(time.time()) - 30 * 86400
+    cnt = lambda k: db.execute("SELECT COUNT(*) FROM ig_log WHERE ig_id=? AND kind=? AND ts>?", (acc["ig_id"], k, since)).fetchone()[0]
+    rules = db.execute("SELECT r.*, COALESCE((SELECT SUM(clicks) FROM ig_links WHERE rule_id=r.id),0) AS cl "
+                       "FROM ig_rules r WHERE ig_id=? ORDER BY sent DESC LIMIT 8", (acc["ig_id"],)).fetchall()
+    prods = db.execute("SELECT p.title, COALESCE(l.clicks,0) AS cl FROM ig_products p LEFT JOIN ig_links l ON l.id=p.link_id "
+                       "WHERE p.ig_id=? ORDER BY cl DESC LIMIT 5", (acc["ig_id"],)).fetchall()
+    fol = db.execute("SELECT day, cnt FROM ig_followers WHERE ig_id=? AND day>=? ORDER BY day", (acc["ig_id"], ig_today(30))).fetchall()
+    ev = lambda k: [("@" + r["username"]) if r["username"] else f"id{r['user_id']}" for r in
+                    db.execute("SELECT * FROM ig_events WHERE ig_id=? AND kind=? AND ts>? ORDER BY ts DESC LIMIT 40", (acc["ig_id"], k, since)).fetchall()]
+    return web.json_response({
+        "ok": True, "username": acc["username"], "comment": cnt("comment"), "dm": cnt("dm"), "click": cnt("click"),
+        "contacts": db.execute("SELECT COUNT(*) FROM ig_contacts WHERE ig_id=?", (acc["ig_id"],)).fetchone()[0],
+        "rules": [{"kind": r["kind"], "keyword": r["keyword"], "sent": r["sent"], "clicks": r["cl"]} for r in rules],
+        "products": [{"title": p["title"], "clicks": p["cl"]} for p in prods],
+        "followers": [{"day": r["day"], "cnt": r["cnt"]} for r in fol], "followed": ev("follow"), "unfollowed": ev("unfollow")})
+
+
+# ---------- оплата тарифа из приложения ----------
+async def api_app_pay_start(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    d = await app_body(request)
+    key = d.get("plan")
+    plan = PLANS.get(key)
+    sub = await get_sub(uid, fresh=True)
+    if not plan or (key == "intro" and not intro_available(sub)):
+        return _jerr("Это предложение недоступно")
+    if not ADMIN_IDS:
+        return _jerr(f"Оплата временно недоступна. Напишите в поддержку {SUPPORT_USER}.")
+    old_id = sub.get("pending")
+    if old_id:
+        old = await store_get(f"payments/{old_id}")
+        if isinstance(old, dict):
+            if old.get("status") == "review":
+                return _jerr("Ваш предыдущий платёж ещё проверяется. Подождите до 5 минут.")
+            if old.get("status") == "awaiting":
+                await store_update(f"payments/{old_id}", {"status": "cancelled"})
+    pid = uuid.uuid4().hex[:10]
+    cl = _kv_get(f"clients/{uid}") or {}
+    await store_set(f"payments/{pid}", {"id": pid, "uid": uid, "plan": key, "days": plan["days"], "amount": plan["price"],
+                                        "status": "awaiting", "created": int(time.time()), "name": cl.get("name") or "",
+                                        "username": cl.get("username") or "", "chat": uid, "msg_id": 0})
+    await sub_update(uid, pending=pid)
+    return web.json_response({"ok": True, "id": pid, "amount": plan["price"], "label": plan["label"], "dc": PAY_DC, "alif": PAY_ALIF})
+
+
+async def api_app_pay_cancel(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    pay = await pay_awaiting(uid)
+    if pay:
+        await pay_cancel_do(pay)
+    return web.json_response({"ok": True})
+
+
+async def app_read_image(request: web.Request):
+    f = await request.post()
+    fld = f.get("file")
+    data = fld.file.read() if fld is not None and hasattr(fld, "file") else b""
+    return f, data
+
+
+async def api_app_pay_receipt(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    pay = await pay_awaiting(uid)
+    if not pay:
+        return _jerr("Нет платежа, который ждёт чек. Выберите тариф заново.")
+    _, data = await app_read_image(request)
+    if not data or len(data) > 10 * 1024 * 1024:
+        return _jerr("Прикрепите фото чека (до 10 МБ)")
+    wait = await BOT2.send_message(uid, "⏳ Ваш платёж обрабатывается, пожалуйста, подождите до 5 минут.\n\n"
+                                        f"Если тариф не подключится — напишите в службу поддержки {SUPPORT_USER}", reply_markup=support_kb())
+    plan = PLANS.get(pay["plan"], {})
+    acc = ig_acc_of(uid)
+    card = (f"💳 Новый платёж #{pay['id']}\n\n👤 {pay.get('name') or '—'}" + (f" (@{pay['username']})" if pay.get("username") else "")
+            + f"\n🆔 {uid}\n📦 Business Pro · {plan.get('label', '')}\n💰 {pay['amount']} TJS\n"
+            "📱 Instagram: " + (f"@{acc['username']}" if acc else "не подключён") +
+            "\n🕐 " + time.strftime("%d.%m %H:%M", time.gmtime(time.time() + TZ_OFFSET)))
+    adm, fid = {}, ""
+    for aid in ADMIN_IDS:
+        try:
+            m = await BOT2.send_photo(aid, BufferedInputFile(data, filename="receipt.jpg") if not fid else fid,
+                                      caption=card, reply_markup=pay_admin_kb(pay["id"]))
+            fid = fid or m.photo[-1].file_id
+            adm[str(aid)] = m.message_id
+        except Exception:
+            logging.warning("Не удалось отправить чек админу %s", aid)
+    if not adm:
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        return _jerr("Не удалось передать чек. Попробуйте ещё раз или напишите в поддержку.")
+    await store_update(f"payments/{pay['id']}", {"status": "review", "file_id": fid, "kind": "photo", "card": card, "adm": adm,
+                                                 "wait_msg": wait.message_id, "wait_chat": wait.chat.id, "submitted": int(time.time())})
+    return web.json_response({"ok": True})
+
+
+# ---------- розыгрыш из приложения ----------
+async def api_rf_join(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    rid = request.match_info["rid"]
+    raf = await rf_get(rid)
+    if not raf or raf.get("status") != "open" or time.time() >= raf["start"]:
+        return _jerr("Приём участников закончен", "closed")
+    cl = _kv_get(f"clients/{uid}") or {}
+    mine = [t for t in await rf_tickets(rid) if t.get("uid") == uid]
+    miss, e = await rf_missing(raf, uid)
+    if miss is None:
+        await notify_admins(BOT2, f"⚠️ Розыгрыш «{raf['title']}»: не могу проверить подписку — {e}", key=f"rf_err_{rid}")
+        return _jerr("Сейчас не получается проверить подписку. Попробуйте позже.")
+    if miss:
+        return web.json_response({"ok": True, "state": "subscribe", "channels": [{"title": c.get("title") or c["chat"], "url": c["url"]} for c in miss]})
+    if raf.get("price"):
+        return web.json_response({"ok": True, "state": "pay", "price": raf["price"], "mine": len(mine), "max": RF_MAX_TICKETS})
+    if mine:
+        return web.json_response({"ok": True, "state": "ticket", "n": mine[0]["n"], "code": mine[0]["code"]})
+    t = await rf_issue(raf, uid, cl.get("name") or "")
+    if not t:
+        return _jerr("Лимит билетов исчерпан")
+    try:
+        await BOT2.send_message(uid, "✅ Условия выполнены — вы участвуете!\n\n" + rf_ticket_text(raf, t))
+    except Exception:
+        pass
+    return web.json_response({"ok": True, "state": "ticket", "n": t["n"], "code": t["code"]})
+
+
+async def api_rf_buy(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    rid = request.match_info["rid"]
+    raf = await rf_get(rid)
+    if not raf or raf.get("status") != "open" or time.time() >= raf["start"] or not raf.get("price"):
+        return _jerr("Покупка билета недоступна", "closed")
+    miss, _e = await rf_missing(raf, uid)
+    if miss is None or miss:
+        return _jerr("Сначала подпишитесь на каналы")
+    mine = [t for t in await rf_tickets(rid) if t.get("uid") == uid]
+    if len(mine) >= RF_MAX_TICKETS:
+        return _jerr(f"Максимум билетов: {RF_MAX_TICKETS}")
+    old_id = await store_get(f"rf_pend/{uid}")
+    if isinstance(old_id, str) and old_id:
+        old = await store_get(f"rpay/{old_id}")
+        if isinstance(old, dict):
+            if old.get("status") == "review":
+                return _jerr("Предыдущий платёж ещё проверяется. Подождите до 10 минут.")
+            if old.get("status") == "awaiting":
+                await store_update(f"rpay/{old_id}", {"status": "cancelled"})
+    pid = uuid.uuid4().hex[:10]
+    cl = _kv_get(f"clients/{uid}") or {}
+    await store_set(f"rpay/{pid}", {"id": pid, "uid": uid, "rid": rid, "amount": raf["price"], "status": "awaiting",
+                                    "created": int(time.time()), "name": cl.get("name") or "", "username": cl.get("username") or "",
+                                    "chat": uid, "msg_id": 0})
+    await store_set(f"rf_pend/{uid}", pid)
+    return web.json_response({"ok": True, "id": pid, "amount": raf["price"], "dc": PAY_DC, "alif": PAY_ALIF})
+
+
+async def api_rf_receipt(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    pay = await rf_pay_awaiting(uid)
+    if not pay:
+        return _jerr("Нет платежа, который ждёт чек. Нажмите «Купить билет» заново.")
+    _, data = await app_read_image(request)
+    if not data or len(data) > 10 * 1024 * 1024:
+        return _jerr("Прикрепите фото чека (до 10 МБ)")
+    wait = await BOT2.send_message(uid, f"⏳ Оплата в проверке. Это займёт от 5 до 10 минут, пожалуйста, ждите.\n\nЕсли что-то не так — {SUPPORT_USER}",
+                                   reply_markup=support_kb())
+    raf = await rf_get(pay["rid"]) or {}
+    card = (f"🎟 Оплата билета #{pay['id']}\n\n🎁 {raf.get('title', '?')}\n👤 {pay.get('name') or '—'}"
+            + (f" (@{pay['username']})" if pay.get("username") else "") + f"\n🆔 {uid}\n💰 {pay['amount']} TJS\n🕐 "
+            + time.strftime("%d.%m %H:%M", time.gmtime(time.time() + TZ_OFFSET)))
+    adm, fid = {}, ""
+    for aid in ADMIN_IDS:
+        try:
+            m = await BOT2.send_photo(aid, BufferedInputFile(data, filename="receipt.jpg") if not fid else fid,
+                                      caption=card, reply_markup=rf_admin_pay_kb(pay["id"]))
+            fid = fid or m.photo[-1].file_id
+            adm[str(aid)] = m.message_id
+        except Exception:
+            logging.warning("Не удалось отправить чек розыгрыша админу %s", aid)
+    if not adm:
+        try:
+            await wait.delete()
+        except Exception:
+            pass
+        return _jerr("Не удалось передать чек. Попробуйте ещё раз.")
+    await store_update(f"rpay/{pay['id']}", {"status": "review", "file_id": fid, "kind": "photo", "card": card, "adm": adm,
+                                             "wait_msg": wait.message_id, "wait_chat": wait.chat.id, "submitted": int(time.time())})
+    return web.json_response({"ok": True})
+
+
+async def api_rf_claim(request: web.Request):
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    d = await app_body(request)
+    status, text = await rf_claim_core(uid, str(d.get("code") or ""))
+    return web.json_response({"ok": status == "ok", "msg": text or "Неверный промокод"})
+
+
+async def api_rf_pending(request: web.Request):
+    """Состояние оплаты билета: ждём чек / проверяется."""
+    uid, err = await app_ctx(request)
+    if err:
+        return err
+    pid = await store_get(f"rf_pend/{uid}")
+    p = await store_get(f"rpay/{pid}") if isinstance(pid, str) and pid else None
+    st = p.get("status") if isinstance(p, dict) else None
+    return web.json_response({"ok": True, "status": st if st in ("awaiting", "review") else None,
+                              "rid": p.get("rid") if isinstance(p, dict) else None})
+
+
+def app_register_routes(app: web.Application):
+    r = app.router
+    r.add_get("/api/app/me", api_app_me)
+    r.add_post("/api/app/request", api_app_request)
+    r.add_post("/api/app/account", api_app_account)
+    r.add_get("/api/app/media", api_app_media)
+    r.add_get("/api/app/rules", api_app_rules)
+    r.add_post("/api/app/rule/new", api_app_rule_new)
+    r.add_post("/api/app/rule/act", api_app_rule_act)
+    r.add_get("/api/app/dm", api_app_dm)
+    r.add_post("/api/app/dm", api_app_dm)
+    r.add_get("/api/app/catalog", api_app_catalog)
+    r.add_post("/api/app/catalog", api_app_catalog)
+    r.add_get("/api/app/stats", api_app_stats)
+    r.add_post("/api/app/pay/start", api_app_pay_start)
+    r.add_post("/api/app/pay/cancel", api_app_pay_cancel)
+    r.add_post("/api/app/pay/receipt", api_app_pay_receipt)
+    r.add_post("/api/raffle/{rid}/join", api_rf_join)
+    r.add_post("/api/raffle/{rid}/buy", api_rf_buy)
+    r.add_post("/api/raffle/receipt", api_rf_receipt)
+    r.add_post("/api/raffle/claim", api_rf_claim)
+    r.add_get("/api/raffle/pending/me", api_rf_pending)
+
+
 @dp2.message(F.text)
 async def ig_text(message: Message):
     uid = message.from_user.id
@@ -4626,9 +6024,17 @@ async def ig_text(message: Message):
         if pay:
             return await message.answer("📸 Отправьте фото чека (скриншот оплаты) в этот чат.",
                                         reply_markup=pay_cancel_kb(pay["id"]))
+        rp = await rf_pay_awaiting(uid)
+        if rp:
+            return await message.answer("📸 Отправьте фото чека (скриншот оплаты) в этот чат.",
+                                        reply_markup=rf_cancel_kb(rp["id"]))
+        if await rf_try_claim(message, text):
+            return
         return await ig_show_menu(message, uid)
     step = w["step"]
     acc = ig_acc_of(uid)
+    if step.startswith("rf_") and uid in ADMIN_IDS:
+        return await rf_wizard_text(message, w, text)
     if step == "token":
         ig_wait.pop(uid, None)
         try:
@@ -4762,6 +6168,11 @@ async def ig_text(message: Message):
 async def ig_photo(message: Message):
     uid = message.from_user.id
     w = ig_wait.get(uid)
+    if w and w.get("step") == "rf_photo" and uid in ADMIN_IDS:
+        return await rf_wizard_photo(message, w)
+    rp = await rf_pay_awaiting(uid)
+    if rp:
+        return await rf_receipt(message, rp)
     pay = await pay_awaiting(uid)
     if pay and not (w and w.get("step") == "p_photo"):
         return await pay_receipt(message, pay)  # фото чека
@@ -4791,7 +6202,8 @@ async def ig_setup_commands(bot: Bot):
         try:
             await bot.set_my_commands(
                 cmds + [BotCommand(command="grant", description="🎁 Выдать Pro: /grant ID дни"),
-                         BotCommand(command="iglogin", description="🔓 Вход через Instagram: открыть/закрыть")],
+                         BotCommand(command="iglogin", description="🔓 Вход через Instagram: открыть/закрыть"),
+                         BotCommand(command="raffle", description="🎁 Розыгрыши")],
                 scope=BotCommandScopeChat(chat_id=aid))
         except Exception:
             pass
@@ -4883,6 +6295,8 @@ async def main():
         ig_task = asyncio.create_task(ig_daily_loop())
         bg_tasks.add(ig_task)
         bg(sub_watch_loop())
+        await rf_load_active()
+        bg(rf_loop())
         logging.info("Бот №2 (Instagram): @%s", (await BOT2.get_me()).username)
     await start_web_server(bot, BOT2)
     await bot.delete_webhook(drop_pending_updates=True)
