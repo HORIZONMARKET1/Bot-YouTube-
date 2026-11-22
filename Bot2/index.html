@@ -99,6 +99,9 @@ nav button .pip{position:absolute;top:5px;right:calc(50% - 18px);width:9px;heigh
 @keyframes pop{from{transform:scale(.7);opacity:0}}
 .pod .row{border-top:1px solid var(--line)}
 @media (prefers-reduced-motion:no-preference){.card,.plan{animation:up .25s ease both}@keyframes up{from{opacity:0;transform:translateY(6px)}}}
+.gd .step{display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)}.gd .step:first-of-type{border-top:0}
+.gd .num{flex:none;width:28px;height:28px;border-radius:50%;background:rgba(111,125,255,.18);color:#c4cbff;display:grid;place-items:center;font-weight:700;font-size:13px}
+.gd .step b{display:block;margin-bottom:2px}.gd .warn{background:rgba(240,178,74,.1);border:1px solid rgba(240,178,74,.35);color:#f3cf8c;border-radius:12px;padding:10px 12px;font-size:13px;margin-bottom:12px}
 </style>
 </head>
 <body>
@@ -643,7 +646,38 @@ async function watchPay(){
 }
 
 /* ---------- старт ---------- */
+
+/* ---------- инструкции (открываются кнопкой «Инструкция» в боте, API не нужен) ---------- */
+const GUIDES={
+ invite:{t:'Как принять приглашение',intro:'Приглашение нужно принять один раз. Это занимает около минуты.',steps:[
+  ['Нажмите «Разрешить» в боте','Откроется Instagram (в приложении или в браузере).'],
+  ['Войдите в свой аккаунт Instagram','Именно в тот, который вы указали в заявке.'],
+  ['Найдите «Приглашения тестера»','Обычно страница открывается сразу. Если нет: Instagram → Настройки и конфиденциальность → «Приложения и сайты» → вкладка «Приглашения тестера».'],
+  ['Примите приглашение','Найдите приложение Inflow и нажмите «Принять» (или «Разрешить»).'],
+  ['Дождитесь сообщения об успехе','На экране браузера появится сообщение, что приглашение принято. Закройте это окно.'],
+  ['Вернитесь в бота и нажмите «Готово»','Бот пришлёт следующий шаг: подключение Instagram.']],
+  note:'Если приглашения нет в списке, подождите 1–2 минуты и обновите страницу. Если не появилось, напишите администратору.'},
+ connect:{t:'Как подключить Instagram к боту',intro:'Перед подключением проверьте аккаунт Instagram: он должен быть профессиональным (бизнес или автор) и с включённым «Разрешить доступ к сообщениям» (Настройки → Сообщения и ответы на истории → Контроль подключённых инструментов).',steps:[
+  ['Нажмите «Подключить Instagram» в боте','Откроется окно входа через Meta.'],
+  ['Войдите в свой аккаунт','Используйте тот аккаунт, который добавил администратор.'],
+  ['Выберите бизнес-портфель','В поле «Бизнес-портфолио» выберите свой портфель.'],
+  ['Выберите аккаунт Instagram','В поле «Аккаунты Instagram» выберите тот, который подключаете.'],
+  ['Рекламные кабинеты пропустите','Поле Ad Accounts необязательное, оставьте его пустым.'],
+  ['Нажмите «Продолжить»','На следующем экране оставьте все разрешения включёнными и подтвердите.'],
+  ['Вернитесь в бота','Придёт сообщение «Instagram подключён» и откроется меню бота.']],
+  note:'Если вход выдаёт ошибку «Feature Unavailable», значит приглашение ещё не принято или админ не добавил вас. Вернитесь к первой инструкции или напишите администратору.'}
+};
+function showGuide(k){
+  const g=GUIDES[k]||GUIDES.invite;
+  $('#app').innerHTML=`<div class="gd"><h2>${esc(g.t)}</h2><p class="mut" style="margin-bottom:12px">${esc(g.intro)}</p>
+  <div class="card">${g.steps.map((x,i)=>`<div class="step"><span class="num">${i+1}</span><span><b>${esc(x[0])}</b><span class="mut">${esc(x[1])}</span></span></div>`).join('')}</div>
+  <div class="warn">${esc(g.note)}</div>
+  <button class="btn" id="gclose">Понятно, вернуться в бота</button></div>`;
+  $('#nav').style.display='none';
+  $('#gclose').onclick=()=>{tg?tg.close():history.back()};
+}
 (async()=>{
+  if(q.get('guide')){showGuide(q.get('guide'));return}
   draw();
   try{await loadMe()}catch(e){showErr(e)}
   try{rfLoad()}catch(e){}
