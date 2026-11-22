@@ -102,6 +102,24 @@ nav button .pip{position:absolute;top:5px;right:calc(50% - 18px);width:9px;heigh
 .gd .step{display:flex;gap:12px;padding:12px 0;border-top:1px solid var(--line)}.gd .step:first-of-type{border-top:0}
 .gd .num{flex:none;width:28px;height:28px;border-radius:50%;background:rgba(111,125,255,.18);color:#c4cbff;display:grid;place-items:center;font-weight:700;font-size:13px}
 .gd .step b{display:block;margin-bottom:2px}.gd .warn{background:rgba(240,178,74,.1);border:1px solid rgba(240,178,74,.35);color:#f3cf8c;border-radius:12px;padding:10px 12px;font-size:13px;margin-bottom:12px}
+
+/* загрузка и блокировка кнопок */
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}
+@keyframes pulse{50%{opacity:.5}}
+.sp{display:inline-block;width:16px;height:16px;border:2.5px solid rgba(139,149,177,.35);border-top-color:var(--acc);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-3px;margin-right:6px}
+#pbar{position:fixed;left:0;right:0;top:env(safe-area-inset-top);height:3px;z-index:100;overflow:hidden;opacity:0;pointer-events:none;transition:opacity .2s}
+#pbar.on{opacity:1}
+#pbar i{display:block;width:40%;height:100%;border-radius:3px;background:linear-gradient(90deg,var(--acc),#9a6bff);animation:slide 1s ease-in-out infinite}
+.btn.loading{position:relative;color:transparent!important;pointer-events:none}
+.btn.loading>*{opacity:0}
+.btn.loading::after{content:"";position:absolute;left:50%;top:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border:2.5px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+.btn.ghost.loading::after,.btn.bad.loading::after{border-color:rgba(170,179,255,.3);border-top-color:#aab3ff}
+.row.loading,.pick.loading,.sw.loading,.card.loading{animation:pulse 1s ease-in-out infinite;pointer-events:none}
+body.busy .btn:not(.loading),body.busy .sw:not(.loading),body.busy .pick:not(.loading),body.busy .row:not(.loading),body.busy .seg button,body.busy nav button,body.busy .card.arp:not(.loading){opacity:.45;pointer-events:none}
+body.busy input,body.busy textarea,body.busy select{pointer-events:none;opacity:.7}
+select{appearance:none;-webkit-appearance:none}
+.ans{white-space:pre-wrap;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:12px;margin-top:10px;font-size:14px}
 </style>
 </head>
 <body>
@@ -127,6 +145,7 @@ nav button .pip{position:absolute;top:5px;right:calc(50% - 18px);width:9px;heigh
 <symbol id="link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 005.7 0l3-3a4 4 0 00-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 00-5.7 0l-3 3a4 4 0 005.7 5.7l1-1"/></symbol>
 </defs></svg>
 
+<div id="pbar"><i></i></div>
 <div id="app"></div>
 <nav><div class="in" id="nav"></div></nav>
 
@@ -141,14 +160,17 @@ const q=new URLSearchParams(location.search);
 const user=(tg&&tg.initDataUnsafe&&tg.initDataUnsafe.user)||{first_name:'',id:0};
 
 /* ---------- состояние ---------- */
-const S={tab:'home',stack:[],me:null,auth:true,loaded:false,F:{},P:null,stats:null,rules:null,cat:null,dm:null,media:null,busy:false};
+const S={tab:'home',stack:[],me:null,auth:true,loaded:false,F:{},P:null,stats:null,rules:null,cat:null,dm:null,media:null,busy:false,lock:null,ar:null,arP:null,arMore:false,arAns:'',net:0,arWatch:false};
 const RF={list:[],loaded:false,open:null,data:null,timing:{batch_ms:1500,fall_ms:3400,hl_ms:3200,win_ms:5500,lead_ms:3000},
  mults:[100,15,10,5,2,5,10,15,100],rows:8,skew:0,run:0,cv:null,raf:null,st:null,playing:false,join:null,auto:null,shown:[]};
 
 function rhead(){const h={'X-Init-Data':tg?tg.initData:''};if(q.get('u')){h['X-Rf-U']=q.get('u');h['X-Rf-S']=q.get('s')||''}return h}
 function toast(t){const e=document.createElement('div');e.className='toast';e.textContent=t;document.body.append(e);setTimeout(()=>e.remove(),2600)}
-async function api(path,o={}){
+function NET(d){S.net=Math.max(0,S.net+d);const b=$('#pbar');if(b)b.classList.toggle('on',S.net>0)}
+async function api(path,o={}){NET(1);try{return await apiRaw(path,o)}finally{NET(-1)}}
+async function apiRaw(path,o={}){
   const opt={method:o.method||(o.body||o.form?'POST':'GET'),headers:rhead()};
+  try{if(AbortSignal.timeout)opt.signal=AbortSignal.timeout(30000)}catch(e){}
   if(o.form)opt.body=o.form;else if(o.body){opt.body=JSON.stringify(o.body);opt.headers['Content-Type']='application/json'}
   let r,j={};
   try{r=await fetch('/api/'+path,opt)}catch(e){toast('Нет связи с сервером');return{ok:false}}
@@ -197,6 +219,7 @@ function viewHome(){
     ${a?`<div class="grid g2"><div class="stat"><b>${m.accounts.length}/${m.max_accounts}</b><span class="mut">аккаунтов</span></div><div class="stat"><b>${isPro()?'Pro':'Free'}</b><span class="mut">${isPro()?'до '+fdate(m.until):(m.free_until?'до '+fdate(m.free_until):'тариф')}</span></div></div>`
     :`<button class="btn" data-a="connect">${ic('ig')}Подключить Instagram</button>`}
   </div>
+  ${arPromo()}
   <div class="card"><h3>Быстрые действия</h3>
     ${item('newrule','plus','Новая автоматизация','Комментарии, Direct, сторис, меню')}
     ${item('rules','bolt','Мои автоматизации','Включение и статистика')}
@@ -240,7 +263,7 @@ function viewRules(root){
   const r=S.rules;
   return `${root?'':backBtn()}<h2>Автоматизации</h2>
   ${!S.me.accounts.length?`<div class="card empty">Сначала подключите Instagram.<button class="btn" data-a="connect">${ic('ig')}Подключить</button></div>`
-  :r===null?'<div class="empty">Загрузка…</div>':r.length?r.map(x=>`<div class="card"><div style="display:flex;gap:10px;align-items:center">
+  :r===null?'<div class="empty"><i class="sp"></i> Загрузка…</div>':r.length?r.map(x=>`<div class="card"><div style="display:flex;gap:10px;align-items:center">
      <span style="font-size:22px">${KINDS[x.kind]?KINDS[x.kind][0]:'•'}</span><div style="flex:1;min-width:0"><b>«${esc(x.keyword==='*'?'любое':x.keyword)}»</b><div class="mut">${esc(KINDS[x.kind]?KINDS[x.kind][1]:x.kind)}</div></div>
      <button class="sw ${x.active?'on':''}" data-a="rtog" data-id="${x.id}" aria-label="вкл/выкл"></button></div>
      <div class="mut" style="margin:8px 0">${esc((x.message||x.pub||'').slice(0,110))}</div>
@@ -290,7 +313,7 @@ async function loadRules(){const j=await api('app/rules');if(j.ok){S.rules=j.rul
 function viewDm(){
   const d=S.dm;
   if(!isPro())return `${backBtn()}<h2>Автоответчик в Direct</h2><div class="card empty">Доступно на Business Pro.<button class="btn" data-a="plan">${ic('wallet')}Тарифы</button></div>`;
-  if(!d)return `${backBtn()}<div class="empty">Загрузка…</div>`;
+  if(!d)return `${backBtn()}<div class="empty"><i class="sp"></i> Загрузка…</div>`;
   const blk=(key,title,hint)=>`<div class="card"><div class="row" style="border:0;padding:0"><span class="tx"><b>${title}</b><span class="mut">${hint}</span></span><button class="sw ${d[key+'_on']?'on':''}" data-a="dmtog" data-k="${key}"></button></div>
     <textarea style="margin-top:10px" data-f="dm.${key}" maxlength="1000" placeholder="Текст сообщения">${esc(d[key])}</textarea></div>`;
   return `${backBtn()}<h2>Автоответчик в Direct</h2>${blk('welcome','👋 Приветствие','Получает человек, который пишет впервые')}${blk('dflt','↩️ Ответ по умолчанию','Когда нет ключевых слов (не чаще раза в 12 часов)')}
@@ -301,7 +324,7 @@ function viewDm(){
 function viewCatalog(){
   const c=S.cat;
   if(!isPro())return `${backBtn()}<h2>Каталог товаров</h2><div class="card empty">Доступно на Business Pro.<button class="btn" data-a="plan">${ic('wallet')}Тарифы</button></div>`;
-  if(!c)return `${backBtn()}<div class="empty">Загрузка…</div>`;
+  if(!c)return `${backBtn()}<div class="empty"><i class="sp"></i> Загрузка…</div>`;
   const P=S.F.prod;
   return `${backBtn()}<h2>Каталог товаров</h2>
   <div class="card">${c.length?c.map(p=>`<div class="row">${p.img?`<img class="pimg" src="${esc(p.img)}" alt="">`:`<span class="ic">${ic('bag')}</span>`}<span class="tx"><b>${esc(p.title)}</b><span class="mut">${esc(p.sub)} · кликов ${p.clicks}</span></span><button class="btn sm bad" data-a="pdel" data-id="${p.id}">${ic('trash')}</button></div>`).join(''):'<div class="empty">Пока пусто</div>'}</div>
@@ -325,7 +348,7 @@ function spark(rows){
 function viewStats(){
   const s=S.stats;
   if(!isPro())return `${backBtn()}<h2>Статистика</h2><div class="card empty">Доступно на Business Pro.<button class="btn" data-a="plan">${ic('wallet')}Тарифы</button></div>`;
-  if(!s)return `${backBtn()}<div class="empty">Загрузка…</div>`;
+  if(!s)return `${backBtn()}<div class="empty"><i class="sp"></i> Загрузка…</div>`;
   const f=s.followers,diff=f.length>1?f[f.length-1].cnt-f[0].cnt:0;
   return `${backBtn()}<h2>@${esc(s.username)} · 30 дней</h2>
   <div class="grid g2"><div class="stat"><b>${s.comment}</b><span class="mut">срабатываний на комментарии</span></div><div class="stat"><b>${s.dm}</b><span class="mut">сообщений отправлено</span></div>
@@ -336,6 +359,77 @@ function viewStats(){
    <div class="mut" style="margin-top:8px">Instagram не отдаёт полный список подписчиков, поэтому по именам видны только контакты бота.</div></div>
   ${s.rules.length?`<div class="card"><h3>По автоматизациям</h3>${s.rules.map(r=>`<div class="row"><span class="tx"><b>${KINDS[r.kind]?KINDS[r.kind][0]:'•'} «${esc(r.keyword==='*'?'любое':r.keyword)}»</b><span class="mut">отправлено ${r.sent} · кликов ${r.clicks}</span></span></div>`).join('')}</div>`:''}
   ${s.products.length?`<div class="card"><h3>Товары (клики «Купить»)</h3>${s.products.map(p=>`<div class="row"><span class="tx"><b>🛍 ${esc(p.title)}</b></span><span class="mut">${p.clicks}</span></div>`).join('')}</div>`:''}`;
+}
+
+
+/* ---------- ИИ-автоответчик ---------- */
+function arPromo(){
+  const a=(S.me&&S.me.ar)||{price:20};
+  const chip=a.pending&&a.pending.status==='review'?'<span class="chip live">⏳ Проверка</span>':a.active?'<span class="chip open">Активен</span>':`<span class="chip">${a.price} TJS / мес</span>`;
+  const sub=a.active?(a.admin?'Доступ администратора':'Подписка до '+fdate(a.until)):'Отвечает людям в Direct, пока вы не в сети';
+  return `<button class="card hero arp" data-a="ar" style="width:100%;text-align:left"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><b style="font-size:17px">🤖 ИИ-автоответчик</b>${chip}</div><div class="mut" style="margin-top:6px">${sub}</div></button>`;
+}
+const arCustom=a=>a.hour_from>=0&&a.hour_to>=0&&a.hour_from!==a.hour_to;
+const arDelayTxt=d=>d===0?'Сразу':d+' мин';
+function arPayBox(P){
+  if(P.sent)return `<div class="card hero"><h3>⏳ Оплата в проверке</h3><p class="mut" style="margin-top:6px">Это займёт от 5 до 10 минут. Когда админ подтвердит, бот пришлёт сообщение, а здесь всё включится само.</p><button class="btn ghost" data-a="support">Поддержка</button></div>`;
+  return `<div class="card"><h3>💳 Оплата: ИИ-автоответчик</h3>
+   <div class="stat" style="margin:10px 0"><span class="mut">Сумма на ${P.days} дней</span><b style="font-size:26px">${P.amount} TJS</b></div>
+   <div class="mut">Переведите сумму по номеру телефона:</div>
+   <div class="copy"><span>DC City<br><b>${esc(P.dc)}</b></span><button class="btn sm ghost" data-a="copy" data-v="${esc(P.dc)}">${ic('copy')}</button></div>
+   <div class="copy"><span>Alif Mobi<br><b>${esc(P.alif)}</b></span><button class="btn sm ghost" data-a="copy" data-v="${esc(P.alif)}">${ic('copy')}</button></div>
+   <label class="l">📸 После оплаты прикрепите чек (скриншот)</label><input type="file" accept="image/*" id="arfile">
+   <button class="btn" data-a="arrcpt">Отправить чек</button><button class="btn ghost" data-a="arcancel">Отмена</button></div>`;
+}
+function viewArOffer(a){
+  const pend=a.pending;
+  let pay='';
+  if(S.arP)pay=arPayBox(S.arP);
+  else if(pend&&pend.status==='review')pay=arPayBox({sent:1});
+  else if(pend&&pend.status==='awaiting')pay=`<div class="note">Вы начали оплату. <button style="text-decoration:underline" data-a="arbuy">Продолжить</button></div>`;
+  const more=S.arMore?`<div class="card"><h3>Что умеет</h3>${(a.features||[]).map(x=>`<div class="row"><span class="ic" style="font-size:20px">${esc(x.i)}</span><span class="tx"><b>${esc(x.t)}</b><span class="mut">${esc(x.d)}</span></span></div>`).join('')}<div class="mut" style="margin-top:8px">${esc(a.info)}</div></div>`:'';
+  return `${backBtn()}<h2>🤖 ИИ-автоответчик</h2>
+  <div class="card hero"><div class="big">${a.price} TJS <span class="mut" style="font-size:15px;font-weight:500">/ ${a.days} дней</span></div><p style="margin:6px 0 2px">${esc(a.short)}</p></div>
+  ${a.rejected&&!pay?`<div class="note">❌ Платёж отклонён: ${esc(a.rejected)}. Отправьте чек снова или напишите в поддержку.</div>`:''}
+  ${pay}${more}
+  <button class="btn ghost" data-a="armore">${S.arMore?'Скрыть подробности':'📖 Подробнее'}</button>
+  ${S.arP||pend?'':`<button class="btn" data-a="arbuy">${ic('wallet')}Оплатить · ${a.price} TJS</button>`}`;
+}
+function viewArSettings(a){
+  const head=`<div class="card hero"><span class="mut">${a.admin?'Доступ администратора':'Подписка активна'}</span><div class="big" style="font-size:20px">${a.admin?'без срока':'до '+fdate(a.until)}</div>${a.admin?'':`<span class="mut">Осталось ${dleft(a.until)} дн.</span>`}</div>`;
+  const pay=S.arP?arPayBox(S.arP):(a.pending&&a.pending.status==='review'?arPayBox({sent:1}):'');
+  if(!a.has_acc)return `${backBtn()}<h2>🤖 ИИ-автоответчик</h2>${head}${pay}<div class="card empty">Сначала подключите Instagram.<button class="btn" data-a="connect">${ic('ig')}Подключить</button></div>`;
+  const custom=arCustom(a),cur=!custom?'a':(a.hour_from===22&&a.hour_to===9)?'n':(a.hour_from===18&&a.hour_to===9)?'e':'c';
+  const seg=(act,items,c)=>items.map(([v,t])=>`<button class="${c===v?'on':''}" data-a="${act}" data-v="${v}">${t}</button>`).join('');
+  const hopt=h0=>Array.from({length:24},(_,h)=>`<option value="${h}" ${h===h0?'selected':''}>${String(h).padStart(2,'0')}:00</option>`).join('');
+  return `${backBtn()}<h2>🤖 ИИ-автоответчик</h2>${head}${pay}
+  <div class="card"><div class="row" style="border:0;padding:0"><span class="tx"><b>Автоответчик ${a.on?'включён':'выключен'}</b><span class="mut">@${esc(a.username)} · нажмите «Сохранить» внизу</span></span><button class="sw ${a.on?'on':''}" data-a="artog" aria-label="вкл/выкл"></button></div></div>
+  ${!a.ai_ready?`<div class="note">⚠️ ИИ ещё не настроен на сервере. Напишите администратору.</div>`:''}
+  <div class="card"><h3>⏱ Когда отвечать</h3><div class="mut" style="margin:4px 0 10px">ИИ ответит, если вы не написали человеку за это время. Ответите раньше — ИИ промолчит.</div><div class="seg">${seg('ardelay',a.delays.map(d=>[d,arDelayTxt(d)]),a.delay)}</div></div>
+  <div class="card"><h3>🕒 Расписание</h3><div class="mut" style="margin:4px 0 10px">В какие часы автоответчик работает (время UTC+5).</div>
+   <div class="seg">${seg('arhrs',[['a','Весь день'],['n','🌙 22–09'],['e','🌆 18–09'],['c','Свои часы']],cur)}</div>
+   ${cur==='c'?`<div style="display:flex;gap:8px;margin-top:10px"><div style="flex:1"><label class="l" style="margin-top:0">С</label><select data-f="ar.hour_from">${hopt(a.hour_from)}</select></div><div style="flex:1"><label class="l" style="margin-top:0">До</label><select data-f="ar.hour_to">${hopt(a.hour_to)}</select></div></div>`:''}</div>
+  <div class="card"><label class="l" style="margin-top:0">✏️ Инструкции для ИИ (до 1500 символов)</label><textarea data-f="ar.note" maxlength="1500" placeholder="Доставка по Душанбе бесплатно от 200 сомони. Оплата наличными или DC Wallet. Скидки не обещать.">${esc(a.note||'')}</textarea></div>
+  <button class="btn" data-a="arsave">Сохранить</button>
+  <div class="card" style="margin-top:12px"><h3>🧪 Проверить ответ</h3><div class="mut" style="margin:4px 0 8px">Напишите вопрос как клиент. Клиенту в Instagram ничего не уйдёт.</div>
+   <input data-f="ar.test" placeholder="Сколько стоит доставка?" maxlength="300" value="${esc(a.test||'')}">
+   <button class="btn ghost" data-a="artest">Показать ответ ИИ</button>${S.arAns?`<div class="ans">${esc(S.arAns)}</div>`:''}</div>
+  <div class="card"><h3>📊 Ответов ИИ</h3><div class="grid g2" style="margin-top:8px"><div class="stat"><b>${a.n24||0}</b><span class="mut">за сутки</span></div><div class="stat"><b>${a.n30||0}</b><span class="mut">за 30 дней</span></div></div></div>
+  ${a.admin?'':(S.arP||(a.pending)?'':`<button class="btn ghost" data-a="arbuy">${ic('wallet')}Продлить на ${a.days} дней · ${a.price} TJS</button>`)}
+  <div class="mut" style="margin-top:12px">${esc(a.info)}</div>`;
+}
+function viewAr(){
+  const a=S.ar;
+  if(!a)return `${backBtn()}<div class="empty"><i class="sp"></i> Загрузка…</div>`;
+  return a.active?viewArSettings(a):viewArOffer(a);
+}
+async function arLoad(){const j=await api('app/ar');if(j.ok){j.test=(S.ar&&S.ar.test)||'';S.ar=j;draw()}}
+async function watchAr(){
+  if(S.arWatch)return;S.arWatch=true;
+  try{for(let i=0;i<120;i++){await sleep(8000);const j=await api('app/ar',{quiet:true});if(!j.ok)continue;j.test=(S.ar&&S.ar.test)||'';S.ar=j;
+    if(j.paid){toast('✅ ИИ-автоответчик подключён!');S.arP=null;await loadMe();draw();return}
+    if(!j.pending){S.arP=null;toast('❌ Платёж отклонён. Подробности в боте.');draw();return}}}
+  finally{S.arWatch=false}
 }
 
 /* ---------- тариф и оплата ---------- */
@@ -365,7 +459,7 @@ function viewPlan(){
   else if(m.tier==='expired')st=`<div class="note">⏸ Бесплатный период закончился. Подключите Business Pro, чтобы продолжить.</div>`;
   const pend=m.pending;
   const pay=S.P&&!S.P.done?payBox(S.P):pend&&pend.status==='review'?payBox({sent:1}):pend&&pend.status==='awaiting'?`<div class="note">Вы начали оплату. <button style="text-decoration:underline" data-a="buy" data-id="${esc(pend.plan)}">Продолжить</button></div>`:'';
-  return `<h2>Тариф</h2>${st}${pay}${planCard(1)}${planCard(0)}
+  return `<h2>Тариф</h2>${st}${pay}${planCard(1)}${planCard(0)}${arPromo()}
   <div class="card"><h3>Нужна помощь?</h3><button class="btn ghost" data-a="support">${ic('help')}Поддержка ${esc(m.support_user||'')}</button></div>`;
 }
 
@@ -416,7 +510,7 @@ function rfCard(r){
    <button class="btn ${r.status==='open'&&!mine?'':'ghost'}">${r.status==='open'?(mine?'Мои билеты':'Участвовать'):r.status==='live'?'Смотреть':'Результаты'}</button></div>`;
 }
 function viewRaffleList(){
-  return `<h2>Розыгрыши</h2>${!RF.loaded?'<div class="empty">Загрузка…</div>':RF.list.length?RF.list.map(rfCard).join(''):'<div class="card empty">Пока нет активных розыгрышей.<br>Как только админ запустит — придёт сообщение от бота.</div>'}`;
+  return `<h2>Розыгрыши</h2>${!RF.loaded?'<div class="empty"><i class="sp"></i> Загрузка…</div>':RF.list.length?RF.list.map(rfCard).join(''):'<div class="card empty">Пока нет активных розыгрышей.<br>Как только админ запустит — придёт сообщение от бота.</div>'}`;
 }
 function rfJoinBox(r){
   const j=RF.join;
@@ -558,13 +652,13 @@ function draw(){try{_draw()}catch(e){showErr(e);try{drawNav()}catch(_){}}}
 function _draw(){
   const a=$('#app');
   if(!S.auth){a.innerHTML=authWarn();drawNav();return}
-  if(!S.me){a.innerHTML=S.loaded?'<div class="card empty">Не удалось загрузить данные. Откройте приложение снова.</div>':'<div class="empty">Загрузка…</div>';drawNav();return}
+  if(!S.me){a.innerHTML=S.loaded?'<div class="card empty">Не удалось загрузить данные. Откройте приложение снова.</div>':'<div class="empty"><i class="sp"></i> Загрузка…</div>';drawNav();return}
   const top=S.stack[S.stack.length-1];let h;
   if(top){
-    const v={connect:viewConnect,guide:viewGuide,accounts:viewAccounts,newrule:viewNewRule,rules:()=>viewRules(false),dm:viewDm,catalog:viewCatalog,stats:viewStats}[top.n];
+    const v={ar:viewAr,connect:viewConnect,guide:viewGuide,accounts:viewAccounts,newrule:viewNewRule,rules:()=>viewRules(false),dm:viewDm,catalog:viewCatalog,stats:viewStats}[top.n];
     h=v?v():'';
   }else h=({home:viewHome,rules:()=>viewRules(true),raffle:viewRaffle,plan:viewPlan,me:viewMe}[S.tab])();
-  a.innerHTML=h;drawNav();
+  a.innerHTML=h;drawNav();applyBusy();
   if(!top&&S.tab==='raffle')rfMount();
   if(tg&&tg.BackButton){const sb=S.stack.length||(S.tab==='raffle'&&RF.open);sb?tg.BackButton.show():tg.BackButton.hide()}
 }
@@ -578,6 +672,7 @@ if(tg&&tg.BackButton)tg.BackButton.onClick(back);
 function setPath(path,v){const p=path.split('.');let o=S.F;for(let i=0;i<p.length-1;i++)o=o[p[i]];o[p[p.length-1]]=v}
 document.addEventListener('input',e=>{const f=e.target.dataset&&e.target.dataset.f;if(!f)return;
   if(f==='claim'){S.F.claim=e.target.value;return}
+  if(f.startsWith('ar.')){const k=f.slice(3);S.ar[k]=(k==='hour_from'||k==='hour_to')?+e.target.value:e.target.value;return}
   if(f.startsWith('dm.')){S.dm[f.slice(3)]=e.target.value;return}
   setPath(f,e.target.value)});
 
@@ -618,6 +713,21 @@ const A={
     const fd=new FormData();fd.append('file',blob,'receipt.jpg');
     const j=await api(P.kind==='plan'?'app/pay/receipt':'raffle/receipt',{form:fd});S.busy=false;
     if(j.ok){toast('✅ Чек отправлен');P.sent=1;if(P.kind==='plan'){await loadMe()}draw();watchPay()}},
+  ar:async()=>{S.ar=null;S.arMore=false;S.arAns='';S.arP=null;go('ar');await arLoad()},
+  armore:()=>{S.arMore=!S.arMore;draw()},
+  arbuy:async()=>{const j=await api('app/ar/pay/start',{body:{}});if(j.ok){S.arP={amount:j.amount,days:j.days,dc:j.dc,alif:j.alif};await arLoad();draw();scrollTo({top:0,behavior:'smooth'})}},
+  arcancel:async()=>{await api('app/ar/pay/cancel',{body:{}});S.arP=null;await arLoad();await loadMe()},
+  arrcpt:async()=>{const f=$('#arfile');if(!f||!f.files[0]){toast('Прикрепите фото чека');return}
+    let blob;try{blob=await toJpeg(f.files[0],1280)}catch(e){toast('Не удалось обработать фото');return}
+    const fd=new FormData();fd.append('file',blob,'receipt.jpg');const j=await api('app/ar/pay/receipt',{form:fd});
+    if(j.ok){toast('✅ Чек отправлен админу');S.arP=Object.assign(S.arP||{},{sent:1});await arLoad();await loadMe();draw();watchAr()}},
+  artog:()=>{S.ar.on=!S.ar.on;draw()},
+  ardelay:(el)=>{S.ar.delay=+el.dataset.v;draw()},
+  arhrs:(el)=>{const v=el.dataset.v,a=S.ar;if(v==='a'){a.hour_from=-1;a.hour_to=-1}else if(v==='n'){a.hour_from=22;a.hour_to=9}else if(v==='e'){a.hour_from=18;a.hour_to=9}else if(!arCustom(a)||(a.hour_from===22&&a.hour_to===9)||(a.hour_from===18&&a.hour_to===9)){a.hour_from=20;a.hour_to=8}draw()},
+  arsave:async()=>{const a=S.ar,j=await api('app/ar',{body:{on:a.on,delay:a.delay,hour_from:a.hour_from,hour_to:a.hour_to,note:a.note||''}});
+    if(j.ok){j.test=a.test||'';S.ar=j;toast(j.warn||'✅ Сохранено');draw();loadMe()}},
+  artest:async()=>{const t=((S.ar&&S.ar.test)||'').trim();if(!t){toast('Напишите вопрос клиента');return}S.arAns='';
+    const j=await api('app/ar/test',{body:{text:t}});if(j.ok){S.arAns=j.answer;draw()}},
   copy:(el)=>copy(el.dataset.v),
   support:()=>openTg(S.me.support),
   opench:(el)=>openTg(el.dataset.u),
@@ -625,11 +735,17 @@ const A={
   rfplay:()=>{if(!RF.playing)rfPlay(RF.data.status!=='live')},
   claim:async()=>{const j=await api('raffle/claim',{body:{code:S.F.claim||''}});if(j.msg)toast(j.msg);if(j.ok){await loadMe()}},
 };
+function lockUi(b){S.lock={a:b.dataset.a,id:b.dataset.id,k:b.dataset.k,i:b.dataset.i,v:b.dataset.v};document.body.classList.add('busy');b.classList.add('loading');tg&&tg.HapticFeedback&&tg.HapticFeedback.impactOccurred('light')}
+function unlockUi(){S.lock=null;document.body.classList.remove('busy');document.querySelectorAll('.loading').forEach(x=>x.classList.remove('loading'))}
+function applyBusy(){const l=S.lock;if(!l)return;let sel=`[data-a="${l.a}"]`;['id','k','i','v'].forEach(k=>{if(l[k]!==undefined)sel+=`[data-${k}="${CSS.escape(l[k])}"]`});const el=document.querySelector(sel);if(el)el.classList.add('loading')}
 document.addEventListener('click',e=>{
   const b=e.target.closest('[data-tab],[data-a],[data-rf]');if(!b)return;
+  if(S.lock&&b.dataset.a!=='back')return; /* пока идёт сохранение/отправка, остальные кнопки не нажимаются */
   if(b.dataset.tab){tab(b.dataset.tab);return}
   if(b.dataset.rf!==undefined){rfOpen(b.dataset.rf,false);return}
-  const f=A[b.dataset.a];if(f)f(b);
+  const f=A[b.dataset.a];if(!f)return;
+  const r=f(b);
+  if(r&&typeof r.then==='function'){lockUi(b);r.finally(unlockUi)}
 });
 async function pollConnect(){
   for(let i=0;i<40;i++){await sleep(4000);const n=S.me?S.me.accounts.length:0;
