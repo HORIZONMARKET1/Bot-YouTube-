@@ -122,6 +122,42 @@ PROXY_FOR = os.getenv("PROXY_FOR", "instagram").lower()  # instagram — тол�
 DB_PATH = os.getenv("DB_PATH") or str(DATA_DIR / "bot.db")
 
 MAX_SIZE = 50 * 1024 * 1024  # лимит Telegram Bot API на отправку файлов
+BIG_MAX = 2000 * 1024 * 1024  # лимит Telegram (MTProto) для больших файлов: 2 ГБ
+IG_QUALITY = "720"  # Instagram: качество не спрашиваем, всегда 720p
+# Для файлов больше 50 МБ нужны API_ID и API_HASH с https://my.telegram.org (раздел API development tools).
+# Если они не заданы — бот работает как раньше (лимит 50 МБ + сжатие).
+API_ID = int(os.getenv("API_ID", "0") or 0)
+API_HASH = (os.getenv("API_HASH") or "").strip()
+
+TelegramClient = DocumentAttributeVideo = DocumentAttributeAudio = None
+try:
+    from telethon import TelegramClient
+    from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeVideo
+except ImportError:
+    if API_ID and API_HASH:
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "--quiet", "telethon"],
+                           timeout=240, capture_output=True)
+            from telethon import TelegramClient
+            from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeVideo
+        except Exception:
+            TelegramClient = None
+            logging.warning("Не удалось установить telethon — файлы больше 50 МБ отправляться не будут")
+
+big_client = None  # создаётся в main(), если заданы API_ID и API_HASH
+
+
+def big_ready() -> bool:
+    return big_client is not None
+
+
+def size_limit() -> int:
+    """Максимальный размер файла, который бот может отправить сейчас."""
+    return BIG_MAX if big_ready() else MAX_SIZE
+
+
+def is_instagram(url: str) -> bool:
+    return "instagram.com" in url.lower()
 MAX_PHOTO_SIZE = 10 * 1024 * 1024  # лимит Telegram на фото (больше -> как документ)
 QUALITIES = ["360", "480", "720", "1080"]
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
@@ -403,7 +439,10 @@ def get_lang(uid: int) -> str | None:
 
 
 def t(uid: int, key: str) -> str:
-    return TEXTS[get_lang(uid) or "ru"][key]
+    s = TEXTS[get_lang(uid) or "ru"][key]
+    if big_ready() and key in ("compressing", "too_big", "too_long"):
+        s = s.replace("50 МБ", "2 ГБ")
+    return s
 
 
 def fmt_name(uid: int, mode: str, quality: str | None) -> str:
@@ -709,13 +748,13 @@ def probe_duration(path: Path) -> float:
         return 0.0
 
 
-def compress(path: Path, out_dir: str) -> Path:
-    """Сжимает видео так, чтобы оно уложилось в лимит Telegram (50 МБ)."""
+def compress(path: Path, out_dir: str, limit: int = MAX_SIZE) -> Path:
+    """Сжимает видео так, чтобы оно уложилось в лимит отправки (50 МБ или 2 ГБ)."""
     dur = probe_duration(path)
     if dur <= 0:
         raise RuntimeError("TOO_LONG")
     audio_bits = 96_000
-    video_bits = int(MAX_SIZE * 0.9 * 8 / dur) - audio_bits
+    video_bits = int(limit * 0.9 * 8 / dur) - audio_bits
     if video_bits < 120_000:  # слишком длинное — картинка превратится в кашу
         raise RuntimeError("TOO_LONG")
     out = Path(out_dir) / "compressed.mp4"
@@ -731,8 +770,8 @@ def compress(path: Path, out_dir: str) -> Path:
     if video_bits < 700_000:
         cmd += ["-vf", "scale=-2:480"]
     cmd.append(str(out))
-    subprocess.run(cmd, check=True, capture_output=True, timeout=1800)
-    if out.stat().st_size > MAX_SIZE:
+    subprocess.run(cmd, check=True, capture_output=True, timeout=7200)
+    if out.stat().st_size > limit:
         raise RuntimeError("TOO_LONG")
     return out
 
@@ -808,7 +847,7 @@ def make_telegram_video(path: Path, out_dir: str) -> tuple[Path, dict]:
         ]
     cmd += ["-c:a", "copy"] if audio_ok else ["-c:a", "aac", "-b:a", "128k"]
     cmd += ["-movflags", "+faststart", "-map_metadata", "-1", str(out)]
-    subprocess.run(cmd, check=True, capture_output=True, timeout=1800)
+    subprocess.run(cmd, check=True, capture_output=True, timeout=7200)
 
     kwargs = _video_meta(out)
     thumb = Path(out_dir) / f"{out.stem}_thumb.jpg"
@@ -837,7 +876,7 @@ def convert_audio(src: Path, out_dir: str, kind: str) -> tuple[Path, int]:
         enc = ["-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100"]
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(src), "-vn", "-map", "0:a:0", "-map_metadata", "-1", *enc, str(out)],
-        check=True, capture_output=True, timeout=1800,
+        check=True, capture_output=True, timeout=7200,
     )
     if kind != "voice":
         out = brand_mp3(out, out_dir)
@@ -963,6 +1002,35 @@ def download(url: str, mode: str, quality: str, out_dir: str, state: dict) -> li
     if mode == "photo":
         return files[:10]
     return [max(files, key=lambda p: p.stat().st_size)]
+
+
+# ====================== отправка файлов до 2 ГБ (MTProto через Telethon) ======================
+async def send_big(chat_id: int, path: Path, mode: str, state: dict, **kw) -> None:
+    """Отправляет файл больше 50 МБ. Bot API так не умеет, поэтому используем Telethon."""
+    def progress(sent, total):
+        state["sent"], state["total"] = sent, total
+
+    thumb = kw.get("thumbnail")
+    thumb_path = str(thumb.path) if thumb is not None and getattr(thumb, "path", None) else None
+    common = dict(caption=CAPTION, progress_callback=progress, part_size_kb=512)
+    if mode == "video":
+        attrs = [DocumentAttributeVideo(
+            duration=int(kw.get("duration", 0)), w=int(kw.get("width", 0)), h=int(kw.get("height", 0)),
+            supports_streaming=True,
+        )]
+        await big_client.send_file(chat_id, str(path), attributes=attrs, supports_streaming=True,
+                                   thumb=thumb_path, **common)
+    elif mode == "voice":
+        await big_client.send_file(chat_id, str(path), voice_note=True,
+                                   attributes=[DocumentAttributeAudio(duration=int(kw.get("duration", 0)),
+                                                                      voice=True)], **common)
+    else:  # mp3
+        dur = int(await asyncio.to_thread(probe_duration, path))
+        attrs = [DocumentAttributeAudio(duration=dur, title=BOT_NAME,
+                                        performer=f"@{BOT_USERNAME}" if BOT_USERNAME else BOT_NAME)]
+        await big_client.send_file(
+            chat_id, str(path), attributes=attrs,
+            thumb=str(COVER_THUMB) if COVER_THUMB.exists() else None, **common)
 
 
 # ====================== сторис Instagram ======================
@@ -1962,9 +2030,8 @@ async def got_link(message: Message, bot: Bot):
             await message.answer(problem)
             return
         status = await message.answer(f"{t(uid, 'downloading')}\n{bar(0)} 0%")
-        await process_download(
-            bot, message, status, uid, url, row["last_mode"], row["last_quality"] or "720"
-        )
+        q = IG_QUALITY if is_instagram(url) else (row["last_quality"] or "720")
+        await process_download(bot, message, status, uid, url, row["last_mode"], q)
         return
 
     key = uuid.uuid4().hex[:10]
@@ -2005,11 +2072,14 @@ async def check_sub(call: CallbackQuery, bot: Bot):
 
 
 @dp.callback_query(F.data.startswith("choose:"))
-async def choose_quality(call: CallbackQuery):
+async def choose_quality(call: CallbackQuery, bot: Bot):
     uid = call.from_user.id
     key = call.data.split(":", 1)[1]
     if key not in pending:
         await call.answer(t(uid, "expired"), show_alert=True)
+        return
+    if is_instagram(pending[key]):  # Instagram: качество не спрашиваем, качаем сразу в 720p
+        await start_download(call, bot, "video", IG_QUALITY, key)
         return
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -2052,7 +2122,9 @@ async def process_download(
     active_users.add(uid)
     recent[uid].append(time.time())
     set_field(uid, "last_mode", mode)
-    set_field(uid, "last_quality", quality)
+    if not (mode == "video" and is_instagram(url)):  # 720 для Instagram не запоминаем как выбор пользователя
+        set_field(uid, "last_quality", quality)
+    limit = size_limit()
     task = asyncio.create_task(progress_loop(status, uid, state))
     tmp = tempfile.mkdtemp()
     keep_tmp = False
@@ -2078,9 +2150,9 @@ async def process_download(
                 # приводим к mp4 H.264/AAC, чтобы работало «Сохранить в галерею»
                 video_path, vkw = await asyncio.to_thread(make_telegram_video, paths[0], tmp)
                 paths = [video_path]
-                if paths[0].stat().st_size > MAX_SIZE:
+                if paths[0].stat().st_size > limit:
                     state["stage"] = "compressing"
-                    paths = [await asyncio.to_thread(compress, paths[0], tmp)]
+                    paths = [await asyncio.to_thread(compress, paths[0], tmp, limit)]
                     vkw = await asyncio.to_thread(_video_meta, paths[0])
             elif mode == "mp3":
                 paths = [await asyncio.to_thread(brand_mp3, paths[0], tmp)]
@@ -2091,7 +2163,7 @@ async def process_download(
         finally:
             download_sem.release()
 
-        if mode in ("mp3", "voice") and paths[0].stat().st_size > MAX_SIZE:
+        if mode in ("mp3", "voice") and paths[0].stat().st_size > limit:
             task.cancel()
             await status.edit_text(t(uid, "too_big"))
             return
@@ -2112,13 +2184,16 @@ async def process_download(
             await send_photos(base, paths)
         else:
             state["total"] = paths[0].stat().st_size
-            file = ProgressFile(paths[0], state, **({"filename": f"{BOT_NAME}.mp3"} if mode == "mp3" else {}))
-            if mode == "mp3":
-                await base.answer_audio(file, caption=CAPTION, **audio_kwargs())
-            elif mode == "voice":
-                await base.answer_voice(file, caption=CAPTION, **vkw)
+            if state["total"] > MAX_SIZE:  # больше 50 МБ — отправляем через MTProto (до 2 ГБ)
+                await send_big(base.chat.id, paths[0], mode, state, **vkw)
             else:
-                await base.answer_video(file, supports_streaming=True, caption=CAPTION, **vkw)
+                file = ProgressFile(paths[0], state, **({"filename": f"{BOT_NAME}.mp3"} if mode == "mp3" else {}))
+                if mode == "mp3":
+                    await base.answer_audio(file, caption=CAPTION, **audio_kwargs())
+                elif mode == "voice":
+                    await base.answer_voice(file, caption=CAPTION, **vkw)
+                else:
+                    await base.answer_video(file, supports_streaming=True, caption=CAPTION, **vkw)
 
         task.cancel()
         await status.delete()
@@ -2147,8 +2222,12 @@ async def process_download(
 
 @dp.callback_query(F.data.regexp(r"^(video|mp3|voice|photo):\d+:"))
 async def on_download(call: CallbackQuery, bot: Bot):
-    uid = call.from_user.id
     mode, quality, key = call.data.split(":", 2)
+    await start_download(call, bot, mode, quality, key)
+
+
+async def start_download(call: CallbackQuery, bot: Bot, mode: str, quality: str, key: str):
+    uid = call.from_user.id
 
     # повторная проверка, чтобы нельзя было обойти подписку старыми кнопками
     missing = await missing_channels(bot, uid)
@@ -2194,9 +2273,12 @@ async def on_no_audio(call: CallbackQuery, bot: Bot):
     status = await call.message.edit_text(f"{t(uid, 'sending')}\n{bar(0)} 0%")
     task = asyncio.create_task(progress_loop(status, uid, state))
     try:
-        await call.message.answer_video(
-            ProgressFile(path, state), supports_streaming=True, caption=CAPTION, **item.get("kw", {})
-        )
+        if state["total"] > MAX_SIZE:
+            await send_big(call.message.chat.id, path, "video", state, **item.get("kw", {}))
+        else:
+            await call.message.answer_video(
+                ProgressFile(path, state), supports_streaming=True, caption=CAPTION, **item.get("kw", {})
+            )
         task.cancel()
         await status.delete()
         add_download(uid, "video")
@@ -7360,6 +7442,18 @@ async def main():
             + "\n".join(bad)
             + "\n\nДобавьте бота в администраторы этих каналов. Проверка: /channels",
         )
+    global big_client
+    if API_ID and API_HASH and TelegramClient is not None:
+        try:
+            # сессия лежит в постоянной папке — повторный вход при каждом деплое не нужен
+            big_client = TelegramClient(str(DATA_DIR / "big_sender"), API_ID, API_HASH)
+            await big_client.start(bot_token=TOKEN)
+            logging.info("Большие файлы (до 2 ГБ) включены")
+        except Exception:
+            big_client = None
+            logging.exception("Не удалось запустить Telethon — лимит остаётся 50 МБ")
+    else:
+        logging.info("API_ID/API_HASH не заданы — лимит файлов 50 МБ")
     cleanup = asyncio.create_task(cleanup_loop())
     bg_tasks.add(cleanup)
     global BOT2
